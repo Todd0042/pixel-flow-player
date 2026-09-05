@@ -11,9 +11,17 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
-    <!-- Feedback and playback -->
+    <!-- Feedback, playback and audio routing (Android Auto / Bluetooth) -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+        android:minSdkVersion="34" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_CONNECT"
+        android:minSdkVersion="31" />
 
     <application
         android:allowBackup="true"

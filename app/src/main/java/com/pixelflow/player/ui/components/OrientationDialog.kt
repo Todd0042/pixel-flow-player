@@ -1,5 +1,6 @@
 package com.pixelflow.player.ui.components
 
+import android.content.res.Configuration
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -10,7 +11,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.StayCurrentLandscape
@@ -26,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pixelflow.player.data.VideoFolder
@@ -39,6 +43,9 @@ fun OrientationDialog(
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scrollState = rememberScrollState()
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -48,6 +55,7 @@ fun OrientationDialog(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(scrollState)
                 .padding(horizontal = 24.dp)
                 .padding(bottom = 36.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -67,21 +75,45 @@ fun OrientationDialog(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Portrait Option
-            OrientationOptionCard(
-                orientation = VideoOrientation.PORTRAIT,
-                icon = Icons.Default.PhoneAndroid,
-                count = folder.portraitCount,
-                onClick = { onOrientationSelected(VideoOrientation.PORTRAIT) }
-            )
+            if (isLandscape) {
+                // Side-by-side in landscape
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OrientationOptionCard(
+                        orientation = VideoOrientation.PORTRAIT,
+                        icon = Icons.Default.PhoneAndroid,
+                        count = folder.portraitCount,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onOrientationSelected(VideoOrientation.PORTRAIT) }
+                    )
+                    OrientationOptionCard(
+                        orientation = VideoOrientation.LANDSCAPE,
+                        icon = Icons.Default.StayCurrentLandscape,
+                        count = folder.landscapeCount,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onOrientationSelected(VideoOrientation.LANDSCAPE) }
+                    )
+                }
+            } else {
+                // Stacked in portrait
+                OrientationOptionCard(
+                    orientation = VideoOrientation.PORTRAIT,
+                    icon = Icons.Default.PhoneAndroid,
+                    count = folder.portraitCount,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { onOrientationSelected(VideoOrientation.PORTRAIT) }
+                )
 
-            // Landscape Option
-            OrientationOptionCard(
-                orientation = VideoOrientation.LANDSCAPE,
-                icon = Icons.Default.StayCurrentLandscape,
-                count = folder.landscapeCount,
-                onClick = { onOrientationSelected(VideoOrientation.LANDSCAPE) }
-            )
+                OrientationOptionCard(
+                    orientation = VideoOrientation.LANDSCAPE,
+                    icon = Icons.Default.StayCurrentLandscape,
+                    count = folder.landscapeCount,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { onOrientationSelected(VideoOrientation.LANDSCAPE) }
+                )
+            }
         }
     }
 }
@@ -91,13 +123,13 @@ private fun OrientationOptionCard(
     orientation: VideoOrientation,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     count: Int,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     val isEnabled = count > 0
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
+        modifier = modifier
             .clip(RoundedCornerShape(20.dp))
             .clickable(enabled = isEnabled, onClick = onClick),
         colors = CardDefaults.cardColors(

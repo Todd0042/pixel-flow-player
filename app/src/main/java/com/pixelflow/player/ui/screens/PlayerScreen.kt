@@ -1,7 +1,9 @@
 package com.pixelflow.player.ui.screens
 
 import android.app.Activity
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.VibrationEffect
@@ -9,7 +11,6 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.GestureDetector
 import android.view.MotionEvent
-import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
@@ -20,8 +21,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,7 +50,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -66,7 +64,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -77,11 +74,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
+import com.pixelflow.player.MainActivity
 import com.pixelflow.player.data.FavoritesHelper
 import com.pixelflow.player.data.VideoFolder
 import com.pixelflow.player.data.VideoItem
@@ -115,7 +117,7 @@ fun PlayerScreen(
     val scope = rememberCoroutineScope()
 
     var currentIndex by remember { mutableIntStateOf(0) }
-    val currentVideo = videos[currentIndex]
+    val currentVideo = videos.getOrElse(currentIndex) { videos[0] }
 
     var scaleMode by remember { mutableStateOf(VideoScaleMode.FIT) }
     var isPlaying by remember { mutableStateOf(true) }
@@ -178,7 +180,6 @@ fun PlayerScreen(
         if (request != null) {
             favoriteLauncher.launch(request)
         } else {
-            // Fallback for non-MediaStore URIs or direct toggle
             currentVideo.isFavorite = !currentVideo.isFavorite
             lastFavoriteStatus = currentVideo.isFavorite
             showFavoriteHud = true
@@ -189,39 +190,92 @@ fun PlayerScreen(
         }
     }
 
-    // Initialize ExoPlayer
+    // Configure ExoPlayer with USAGE_MEDIA, handleAudioFocus = true, and WakeMode for Android Auto & Car routing
     val exoPlayer = remember {
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
+
         ExoPlayer.Builder(context).build().apply {
+            setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
+            setWakeMode(C.WAKE_MODE_LOCAL)
             playWhenReady = true
-            repeatMode = Player.REPEAT_MODE_OFF
+            repeatMode = Player.REPEAT_MODE_ALL
+        }
+    }
+
+    // MediaSession for Android Auto detection, car speaker audio routing, and steering wheel controls
+    val sessionActivityPendingIntent = remember {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        PendingIntent.getActivity(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    }
+
+    val mediaSession = remember(exoPlayer) {
+        MediaSession.Builder(context, exoPlayer)
+            .setSessionActivity(sessionActivityPendingIntent)
+            .setId("PixelFlowSession")
+            .build()
+    }
+
+    DisposableEffect(mediaSession) {
+        onDispose {
+            mediaSession.release()
+        }
+    }
+
+    // Prepare full playlist with rich metadata for Android Auto and Car Head Unit displays
+    val mediaItems = remember(videos) {
+        videos.map { video ->
+            MediaItem.Builder()
+                .setUri(video.uri)
+                .setMediaId(video.id.toString())
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(video.title)
+                        .setArtist(folder.name)
+                        .setAlbumTitle(folder.name)
+                        .setDisplayTitle(video.title)
+                        .build()
+                )
+                .build()
         }
     }
 
     var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
 
-    fun playVideoAtIndex(newIndex: Int, direction: SwipeDirection? = null) {
-        val boundedIndex = when {
-            newIndex < 0 -> videos.size - 1
-            newIndex >= videos.size -> 0
-            else -> newIndex
-        }
-
-        currentIndex = boundedIndex
-        val nextVideo = videos[boundedIndex]
-        currentPositionMs = 0L
-        durationMs = nextVideo.durationMs
-
-        // Check if favorite in MediaStore
-        nextVideo.isFavorite = FavoritesHelper.isFavorite(context, nextVideo)
-
-        val mediaItem = MediaItem.fromUri(nextVideo.uri)
-        exoPlayer.setMediaItem(mediaItem)
-        exoPlayer.prepare()
+    fun skipToNext(showIndicator: Boolean = true) {
+        if (videos.isEmpty()) return
+        val targetIndex = (currentIndex + 1) % videos.size
+        exoPlayer.seekToDefaultPosition(targetIndex)
         exoPlayer.play()
-        isPlaying = true
 
-        if (direction != null) {
-            lastSwipeDirection = direction
+        if (showIndicator) {
+            lastSwipeDirection = SwipeDirection.NEXT
+            showSwipeHud = true
+            vibrate(45L)
+            scope.launch {
+                delay(1200)
+                showSwipeHud = false
+            }
+        }
+    }
+
+    fun skipToPrevious(showIndicator: Boolean = true) {
+        if (videos.isEmpty()) return
+        val targetIndex = if (currentIndex - 1 < 0) videos.size - 1 else currentIndex - 1
+        exoPlayer.seekToDefaultPosition(targetIndex)
+        exoPlayer.play()
+
+        if (showIndicator) {
+            lastSwipeDirection = SwipeDirection.PREVIOUS
             showSwipeHud = true
             vibrate(45L)
             scope.launch {
@@ -235,13 +289,11 @@ fun PlayerScreen(
     DisposableEffect(Unit) {
         val window = activity?.window
         if (window != null) {
-            // Lock screen orientation to requested user selection
             activity.requestedOrientation = when (orientation) {
                 VideoOrientation.PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                 VideoOrientation.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             }
 
-            // Cutout mode for complete edge-to-edge past the notch/camera
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 window.attributes.layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -255,15 +307,20 @@ fun PlayerScreen(
             insetsController.hide(WindowInsetsCompat.Type.systemBars())
         }
 
-        // Start playing first video
-        playVideoAtIndex(0)
+        // Set playlist into ExoPlayer and start playback
+        exoPlayer.setMediaItems(mediaItems, 0, 0L)
+        exoPlayer.prepare()
+        exoPlayer.play()
 
-        // ExoPlayer listener for auto-advance and state changes
         val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) {
-                    // Auto advance to next video
-                    playVideoAtIndex(currentIndex + 1, SwipeDirection.NEXT)
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val newIndex = exoPlayer.currentMediaItemIndex
+                if (newIndex in videos.indices) {
+                    currentIndex = newIndex
+                    val currentVid = videos[newIndex]
+                    currentPositionMs = 0L
+                    durationMs = currentVid.durationMs
+                    currentVid.isFavorite = FavoritesHelper.isFavorite(context, currentVid)
                 }
             }
 
@@ -277,7 +334,6 @@ fun PlayerScreen(
             exoPlayer.removeListener(listener)
             exoPlayer.release()
 
-            // Restore standard window configuration on exit
             if (window != null) {
                 activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -288,7 +344,7 @@ fun PlayerScreen(
         }
     }
 
-    // Coroutine to poll playback progress
+    // Coroutine to track playback progress
     LaunchedEffect(isPlaying) {
         while (isActive) {
             if (isPlaying) {
@@ -376,11 +432,9 @@ fun PlayerScreen(
                                 // Portrait: Swipe Up/Down
                                 if (abs(deltaY) > abs(deltaX) && abs(deltaY) > 80) {
                                     if (deltaY < 0) {
-                                        // Swipe UP -> Next video
-                                        playVideoAtIndex(currentIndex + 1, SwipeDirection.NEXT)
+                                        skipToNext()
                                     } else {
-                                        // Swipe DOWN -> Previous video
-                                        playVideoAtIndex(currentIndex - 1, SwipeDirection.PREVIOUS)
+                                        skipToPrevious()
                                     }
                                     return true
                                 }
@@ -388,11 +442,9 @@ fun PlayerScreen(
                                 // Landscape: Swipe Left/Right
                                 if (abs(deltaX) > abs(deltaY) && abs(deltaX) > 80) {
                                     if (deltaX < 0) {
-                                        // Swipe LEFT -> Next video
-                                        playVideoAtIndex(currentIndex + 1, SwipeDirection.NEXT)
+                                        skipToNext()
                                     } else {
-                                        // Swipe RIGHT -> Previous video
-                                        playVideoAtIndex(currentIndex - 1, SwipeDirection.PREVIOUS)
+                                        skipToPrevious()
                                     }
                                     return true
                                 }
@@ -438,7 +490,7 @@ fun PlayerScreen(
                 .padding(bottom = 90.dp)
         )
 
-        // Unobtrusive Controls Overlay (toggled via Single Tap)
+        // Controls Overlay (toggled via Single Tap)
         AnimatedVisibility(
             visible = isControlsVisible,
             enter = fadeIn(),
@@ -530,7 +582,7 @@ fun PlayerScreen(
                     horizontalArrangement = Arrangement.spacedBy(28.dp)
                 ) {
                     IconButton(
-                        onClick = { playVideoAtIndex(currentIndex - 1, SwipeDirection.PREVIOUS) },
+                        onClick = { skipToPrevious() },
                         modifier = Modifier
                             .background(Color.Black.copy(alpha = 0.6f), CircleShape)
                             .size(52.dp)
@@ -566,7 +618,7 @@ fun PlayerScreen(
                     }
 
                     IconButton(
-                        onClick = { playVideoAtIndex(currentIndex + 1, SwipeDirection.NEXT) },
+                        onClick = { skipToNext() },
                         modifier = Modifier
                             .background(Color.Black.copy(alpha = 0.6f), CircleShape)
                             .size(52.dp)

@@ -1,5 +1,6 @@
 package com.pixelflow.player.ui.components
 
+import android.content.res.Configuration
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -10,7 +11,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Schedule
@@ -29,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pixelflow.player.data.PlayOrder
@@ -43,6 +47,9 @@ fun PlayOrderDialog(
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scrollState = rememberScrollState()
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -52,6 +59,7 @@ fun PlayOrderDialog(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(scrollState)
                 .padding(horizontal = 24.dp)
                 .padding(bottom = 36.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -71,29 +79,73 @@ fun PlayOrderDialog(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            PlayOrderCard(
-                order = PlayOrder.NEWEST,
-                icon = Icons.Default.Schedule,
-                onClick = { onOrderSelected(PlayOrder.NEWEST) }
-            )
+            if (isLandscape) {
+                // In landscape: 2x2 grid so all options (including Random) fit on screen & scroll freely
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    PlayOrderCard(
+                        order = PlayOrder.NEWEST,
+                        icon = Icons.Default.Schedule,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onOrderSelected(PlayOrder.NEWEST) }
+                    )
+                    PlayOrderCard(
+                        order = PlayOrder.OLDEST,
+                        icon = Icons.Default.Update,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onOrderSelected(PlayOrder.OLDEST) }
+                    )
+                }
 
-            PlayOrderCard(
-                order = PlayOrder.OLDEST,
-                icon = Icons.Default.Update,
-                onClick = { onOrderSelected(PlayOrder.OLDEST) }
-            )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    PlayOrderCard(
+                        order = PlayOrder.LONGEST,
+                        icon = Icons.Default.HourglassTop,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onOrderSelected(PlayOrder.LONGEST) }
+                    )
+                    PlayOrderCard(
+                        order = PlayOrder.RANDOM,
+                        icon = Icons.Default.Shuffle,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onOrderSelected(PlayOrder.RANDOM) }
+                    )
+                }
+            } else {
+                // In portrait: standard vertical stack with scrolling enabled
+                PlayOrderCard(
+                    order = PlayOrder.NEWEST,
+                    icon = Icons.Default.Schedule,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { onOrderSelected(PlayOrder.NEWEST) }
+                )
 
-            PlayOrderCard(
-                order = PlayOrder.LONGEST,
-                icon = Icons.Default.HourglassTop,
-                onClick = { onOrderSelected(PlayOrder.LONGEST) }
-            )
+                PlayOrderCard(
+                    order = PlayOrder.OLDEST,
+                    icon = Icons.Default.Update,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { onOrderSelected(PlayOrder.OLDEST) }
+                )
 
-            PlayOrderCard(
-                order = PlayOrder.RANDOM,
-                icon = Icons.Default.Shuffle,
-                onClick = { onOrderSelected(PlayOrder.RANDOM) }
-            )
+                PlayOrderCard(
+                    order = PlayOrder.LONGEST,
+                    icon = Icons.Default.HourglassTop,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { onOrderSelected(PlayOrder.LONGEST) }
+                )
+
+                PlayOrderCard(
+                    order = PlayOrder.RANDOM,
+                    icon = Icons.Default.Shuffle,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { onOrderSelected(PlayOrder.RANDOM) }
+                )
+            }
         }
     }
 }
@@ -102,11 +154,11 @@ fun PlayOrderDialog(
 private fun PlayOrderCard(
     order: PlayOrder,
     icon: ImageVector,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
+        modifier = modifier
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
