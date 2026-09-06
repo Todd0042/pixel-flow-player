@@ -90,17 +90,23 @@ import com.pixelflow.player.data.VideoFolder
 import com.pixelflow.player.data.VideoItem
 import com.pixelflow.player.data.VideoOrientation
 import com.pixelflow.player.data.VideoScaleMode
+import com.pixelflow.player.ui.components.DoubleTapSeekHud
 import com.pixelflow.player.ui.components.FavoriteHeartHud
 import com.pixelflow.player.ui.components.ScalingHud
 import com.pixelflow.player.ui.components.ScrubbingHud
 import com.pixelflow.player.ui.components.SwipeDirection
 import com.pixelflow.player.ui.components.SwipeIndicatorHud
 import com.pixelflow.player.ui.theme.PixelHeartRed
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.round
+
+private enum class TapZone {
+    NONE, LEFT, MIDDLE, RIGHT
+}
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -135,10 +141,15 @@ fun PlayerScreen(
     var showSwipeHud by remember { mutableStateOf(false) }
     var lastSwipeDirection by remember { mutableStateOf(SwipeDirection.NEXT) }
 
-    // Scrubbing HUD State
+    // Scrubbing HUD State (Horizontal drag)
     var showScrubHud by remember { mutableStateOf(false) }
     var scrubHudDeltaSeconds by remember { mutableFloatStateOf(0f) }
     var scrubHudTargetMs by remember { mutableLongStateOf(0L) }
+
+    // Double/Multi-Tap Seek HUD State (Left 1/3 = -5s, Right 1/3 = +5s)
+    var showDoubleTapSeekHud by remember { mutableStateOf(false) }
+    var isDoubleTapForward by remember { mutableStateOf(true) }
+    var doubleTapTotalSeconds by remember { mutableIntStateOf(5) }
 
     fun vibrate(durationMs: Long = 40L) {
         try {
@@ -411,27 +422,29 @@ fun PlayerScreen(
                     var isLiveScrubbing = false
                     var scrubBaseMs = 0L
                     var targetSeekMs = 0L
-                    var finalDeltaSec = 0f
+
+                    // Touch tracking for zone taps & multi-tap detection
+                    var touchDownX = 0f
+                    var touchDownY = 0f
+                    var touchDownTime = 0L
+
+                    var lastTapUpTime = 0L
+                    var lastTapZone = TapZone.NONE
+                    var consecutiveTaps = 0
+                    var accumulatedSeekSeconds = 0
+
+                    var pendingSingleTapJob: Job? = null
+                    var multiTapResetJob: Job? = null
+                    var hideDoubleTapHudJob: Job? = null
 
                     val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
                         override fun onDown(e: MotionEvent): Boolean {
-                            scrubBaseMs = exoPlayer.currentPosition
-                            isLiveScrubbing = false
-                            finalDeltaSec = 0f
-                            return true
-                        }
-
-                        override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                            isControlsVisible = !isControlsVisible
-                            return true
-                        }
-
-                        override fun onDoubleTap(e: MotionEvent): Boolean {
-                            cycleScaleMode()
                             return true
                         }
 
                         override fun onLongPress(e: MotionEvent) {
+                            pendingSingleTapJob?.cancel()
+                            consecutiveTaps = 0
                             triggerFavoriteToggle()
                         }
 
@@ -445,16 +458,19 @@ fun PlayerScreen(
                             val totalDeltaX = e2.x - e1.x
                             val totalDeltaY = e2.y - e1.y
 
+                            // If finger dragged, cancel single/double tap detection
+                            if (abs(totalDeltaX) > 25 || abs(totalDeltaY) > 25) {
+                                pendingSingleTapJob?.cancel()
+                                consecutiveTaps = 0
+                            }
+
                             // Horizontal Drag: Fine-tuned scrubbing (0.1 to 5.0 seconds)
-                            if (abs(totalDeltaX) > abs(totalDeltaY) && abs(totalDeltaX) > 20) {
+                            if (abs(totalDeltaX) > abs(totalDeltaY) && abs(totalDeltaX) > 25) {
                                 isLiveScrubbing = true
                                 val screenWidth = resources.displayMetrics.widthPixels.toFloat()
-                                // Half screen width maps to 5.0 seconds for high precision
                                 val fraction = (totalDeltaX / (screenWidth * 0.45f)).coerceIn(-1.0f, 1.0f)
                                 val rawSeconds = fraction * 5.0f
-                                // Round to nearest 0.1s
                                 val roundedSec = (round(rawSeconds * 10f) / 10f)
-                                finalDeltaSec = roundedSec
 
                                 val maxDur = if (durationMs > 0) durationMs else 1L
                                 targetSeekMs = (scrubBaseMs + (roundedSec * 1000).toLong()).coerceIn(0L, maxDur)
@@ -476,6 +492,9 @@ fun PlayerScreen(
                             if (e1 == null) return false
                             val deltaX = e2.x - e1.x
                             val deltaY = e2.y - e1.y
+
+                            pendingSingleTapJob?.cancel()
+                            consecutiveTaps = 0
 
                             // Swiping UP and DOWN is ALWAYS Previous and Next respectively
                             if (abs(velocityY) > abs(velocityX) && abs(deltaY) > 80) {
@@ -521,17 +540,175 @@ fun PlayerScreen(
                     })
 
                     setOnTouchListener { _, event ->
-                        if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
-                            if (isLiveScrubbing) {
-                                // Commit the fine-tuned scrub position
-                                exoPlayer.seekTo(targetSeekMs)
-                                currentPositionMs = targetSeekMs
-                                vibrate(30L)
-                                scope.launch {
-                                    delay(750)
-                                    showScrubHud = false
-                                }
+                        when (event.action) {
+                            MotionEvent.ACTION_DOWN -> {
+                                touchDownX = event.x
+                                touchDownY = event.y
+                                touchDownTime = System.currentTimeMillis()
+                                scrubBaseMs = exoPlayer.currentPosition
                                 isLiveScrubbing = false
+                            }
+                            MotionEvent.ACTION_UP -> {
+                                if (isLiveScrubbing) {
+                                    // Commit the fine-tuned scrub position
+                                    exoPlayer.seekTo(targetSeekMs)
+                                    currentPositionMs = targetSeekMs
+                                    vibrate(30L)
+                                    scope.launch {
+                                        delay(750)
+                                        showScrubHud = false
+                                    }
+                                    isLiveScrubbing = false
+                                } else {
+                                    // Check if this was a tap (small travel distance & short press duration)
+                                    val moveDist = Math.hypot(
+                                        (event.x - touchDownX).toDouble(),
+                                        (event.y - touchDownY).toDouble()
+                                    )
+                                    val pressDuration = System.currentTimeMillis() - touchDownTime
+
+                                    if (moveDist < 35 && pressDuration < 320) {
+                                        val viewWidth = width.toFloat()
+                                        val zone = when {
+                                            event.x < viewWidth / 3f -> TapZone.LEFT
+                                            event.x > viewWidth * 2f / 3f -> TapZone.RIGHT
+                                            else -> TapZone.MIDDLE
+                                        }
+
+                                        val now = System.currentTimeMillis()
+                                        val timeSinceLastUp = now - lastTapUpTime
+
+                                        when (zone) {
+                                            TapZone.MIDDLE -> {
+                                                if (lastTapZone == TapZone.MIDDLE && timeSinceLastUp < 320) {
+                                                    // Double Tap in Middle 1/3: Cycle Zoom / Crop Modes
+                                                    pendingSingleTapJob?.cancel()
+                                                    consecutiveTaps = 0
+                                                    lastTapZone = TapZone.NONE
+                                                    lastTapUpTime = 0L
+                                                    cycleScaleMode()
+                                                } else {
+                                                    // Single Tap in Middle 1/3: Schedule controls toggle
+                                                    lastTapZone = TapZone.MIDDLE
+                                                    lastTapUpTime = now
+                                                    pendingSingleTapJob?.cancel()
+                                                    pendingSingleTapJob = scope.launch {
+                                                        delay(320)
+                                                        isControlsVisible = !isControlsVisible
+                                                        lastTapZone = TapZone.NONE
+                                                    }
+                                                }
+                                            }
+
+                                            TapZone.LEFT -> {
+                                                val maxTapWindow = if (consecutiveTaps >= 2) 650 else 320
+                                                if (lastTapZone == TapZone.LEFT && timeSinceLastUp < maxTapWindow) {
+                                                    // Double (or 3rd, 4th, etc.) Tap on Left 1/3: Jump back in 5s increments
+                                                    pendingSingleTapJob?.cancel()
+                                                    consecutiveTaps++
+                                                    accumulatedSeekSeconds += 5
+
+                                                    val maxDur = if (durationMs > 0) durationMs else 1L
+                                                    val newPos = (exoPlayer.currentPosition - 5000L).coerceIn(0L, maxDur)
+                                                    exoPlayer.seekTo(newPos)
+                                                    currentPositionMs = newPos
+                                                    vibrate(30L)
+
+                                                    isDoubleTapForward = false
+                                                    doubleTapTotalSeconds = accumulatedSeekSeconds
+                                                    showDoubleTapSeekHud = true
+                                                    hideDoubleTapHudJob?.cancel()
+                                                    hideDoubleTapHudJob = scope.launch {
+                                                        delay(900)
+                                                        showDoubleTapSeekHud = false
+                                                    }
+
+                                                    lastTapUpTime = now
+                                                    multiTapResetJob?.cancel()
+                                                    multiTapResetJob = scope.launch {
+                                                        delay(650)
+                                                        consecutiveTaps = 0
+                                                        accumulatedSeekSeconds = 0
+                                                        lastTapZone = TapZone.NONE
+                                                    }
+                                                } else {
+                                                    // First tap on Left: schedule single tap toggle if no 2nd tap follows
+                                                    consecutiveTaps = 1
+                                                    accumulatedSeekSeconds = 0
+                                                    lastTapZone = TapZone.LEFT
+                                                    lastTapUpTime = now
+                                                    multiTapResetJob?.cancel()
+                                                    pendingSingleTapJob?.cancel()
+                                                    pendingSingleTapJob = scope.launch {
+                                                        delay(320)
+                                                        if (consecutiveTaps == 1) {
+                                                            isControlsVisible = !isControlsVisible
+                                                            consecutiveTaps = 0
+                                                            lastTapZone = TapZone.NONE
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            TapZone.RIGHT -> {
+                                                val maxTapWindow = if (consecutiveTaps >= 2) 650 else 320
+                                                if (lastTapZone == TapZone.RIGHT && timeSinceLastUp < maxTapWindow) {
+                                                    // Double (or 3rd, 4th, etc.) Tap on Right 1/3: Jump forward in 5s increments
+                                                    pendingSingleTapJob?.cancel()
+                                                    consecutiveTaps++
+                                                    accumulatedSeekSeconds += 5
+
+                                                    val maxDur = if (durationMs > 0) durationMs else 1L
+                                                    val newPos = (exoPlayer.currentPosition + 5000L).coerceIn(0L, maxDur)
+                                                    exoPlayer.seekTo(newPos)
+                                                    currentPositionMs = newPos
+                                                    vibrate(30L)
+
+                                                    isDoubleTapForward = true
+                                                    doubleTapTotalSeconds = accumulatedSeekSeconds
+                                                    showDoubleTapSeekHud = true
+                                                    hideDoubleTapHudJob?.cancel()
+                                                    hideDoubleTapHudJob = scope.launch {
+                                                        delay(900)
+                                                        showDoubleTapSeekHud = false
+                                                    }
+
+                                                    lastTapUpTime = now
+                                                    multiTapResetJob?.cancel()
+                                                    multiTapResetJob = scope.launch {
+                                                        delay(650)
+                                                        consecutiveTaps = 0
+                                                        accumulatedSeekSeconds = 0
+                                                        lastTapZone = TapZone.NONE
+                                                    }
+                                                } else {
+                                                    // First tap on Right: schedule single tap toggle if no 2nd tap follows
+                                                    consecutiveTaps = 1
+                                                    accumulatedSeekSeconds = 0
+                                                    lastTapZone = TapZone.RIGHT
+                                                    lastTapUpTime = now
+                                                    multiTapResetJob?.cancel()
+                                                    pendingSingleTapJob?.cancel()
+                                                    pendingSingleTapJob = scope.launch {
+                                                        delay(320)
+                                                        if (consecutiveTaps == 1) {
+                                                            isControlsVisible = !isControlsVisible
+                                                            consecutiveTaps = 0
+                                                            lastTapZone = TapZone.NONE
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            TapZone.NONE -> {}
+                                        }
+                                    }
+                                }
+                            }
+                            MotionEvent.ACTION_CANCEL -> {
+                                isLiveScrubbing = false
+                                pendingSingleTapJob?.cancel()
+                                consecutiveTaps = 0
                             }
                         }
                         gestureDetector.onTouchEvent(event)
@@ -541,7 +718,7 @@ fun PlayerScreen(
             }
         )
 
-        // Scaling HUD (on Double Tap)
+        // Scaling HUD (on Middle 1/3 Double Tap)
         ScalingHud(
             visible = showScaleHud,
             scaleMode = scaleMode,
@@ -550,7 +727,17 @@ fun PlayerScreen(
                 .padding(top = 48.dp)
         )
 
-        // Scrubbing HUD (on Left/Right swipe or drag)
+        // Double-Tap Jump HUD (Left 1/3: -5s/tap, Right 1/3: +5s/tap)
+        DoubleTapSeekHud(
+            visible = showDoubleTapSeekHud,
+            isForward = isDoubleTapForward,
+            totalSeconds = doubleTapTotalSeconds,
+            modifier = Modifier
+                .align(if (isDoubleTapForward) Alignment.CenterEnd else Alignment.CenterStart)
+                .padding(horizontal = 48.dp)
+        )
+
+        // Scrubbing HUD (on Left/Right drag)
         ScrubbingHud(
             visible = showScrubHud,
             deltaSeconds = scrubHudDeltaSeconds,
@@ -737,7 +924,7 @@ fun PlayerScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Swipe Up: Prev • Swipe Down: Next • Left/Right: Scrub (0.1–5s) • Hold: Fav",
+                            text = "2-Tap Left: -5s • Middle: Zoom • Right: +5s • Up/Down: Prev/Next",
                             color = Color.White.copy(alpha = 0.8f),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium
