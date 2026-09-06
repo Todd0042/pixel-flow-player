@@ -102,6 +102,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.pow
 import kotlin.math.round
 
 private enum class TapZone {
@@ -143,8 +144,10 @@ fun PlayerScreen(
 
     // Scrubbing HUD State (Horizontal drag)
     var showScrubHud by remember { mutableStateOf(false) }
+    var scrubHudSpeed by remember { mutableFloatStateOf(1f) }
     var scrubHudDeltaSeconds by remember { mutableFloatStateOf(0f) }
     var scrubHudTargetMs by remember { mutableLongStateOf(0L) }
+    var scrubHudIsForward by remember { mutableStateOf(true) }
 
     // Double/Multi-Tap Seek HUD State (Left 1/3 = -5s, Right 1/3 = +5s)
     var showDoubleTapSeekHud by remember { mutableStateOf(false) }
@@ -420,8 +423,12 @@ fun PlayerScreen(
                     playerViewRef = this
 
                     var isLiveScrubbing = false
-                    var scrubBaseMs = 0L
-                    var targetSeekMs = 0L
+                    var wasPlayingBeforeScrub = false
+                    var scrubStartMs = 0L
+                    var currentScrubDeltaX = 0f
+                    var currentScrubDeltaY = 0f
+                    var scrubJob: Job? = null
+                    var hideScrubHudJob: Job? = null
 
                     // Touch tracking for zone taps & multi-tap detection
                     var touchDownX = 0f
@@ -443,44 +450,11 @@ fun PlayerScreen(
                         }
 
                         override fun onLongPress(e: MotionEvent) {
-                            pendingSingleTapJob?.cancel()
-                            consecutiveTaps = 0
-                            triggerFavoriteToggle()
-                        }
-
-                        override fun onScroll(
-                            e1: MotionEvent?,
-                            e2: MotionEvent,
-                            distanceX: Float,
-                            distanceY: Float
-                        ): Boolean {
-                            if (e1 == null) return false
-                            val totalDeltaX = e2.x - e1.x
-                            val totalDeltaY = e2.y - e1.y
-
-                            // If finger dragged, cancel single/double tap detection
-                            if (abs(totalDeltaX) > 25 || abs(totalDeltaY) > 25) {
+                            if (!isLiveScrubbing) {
                                 pendingSingleTapJob?.cancel()
                                 consecutiveTaps = 0
+                                triggerFavoriteToggle()
                             }
-
-                            // Horizontal Drag: Fine-tuned scrubbing (0.1 to 5.0 seconds)
-                            if (abs(totalDeltaX) > abs(totalDeltaY) && abs(totalDeltaX) > 25) {
-                                isLiveScrubbing = true
-                                val screenWidth = resources.displayMetrics.widthPixels.toFloat()
-                                val fraction = (totalDeltaX / (screenWidth * 0.45f)).coerceIn(-1.0f, 1.0f)
-                                val rawSeconds = fraction * 5.0f
-                                val roundedSec = (round(rawSeconds * 10f) / 10f)
-
-                                val maxDur = if (durationMs > 0) durationMs else 1L
-                                targetSeekMs = (scrubBaseMs + (roundedSec * 1000).toLong()).coerceIn(0L, maxDur)
-
-                                scrubHudDeltaSeconds = roundedSec
-                                scrubHudTargetMs = targetSeekMs
-                                showScrubHud = true
-                                return true
-                            }
-                            return false
                         }
 
                         override fun onFling(
@@ -490,6 +464,8 @@ fun PlayerScreen(
                             velocityY: Float
                         ): Boolean {
                             if (e1 == null) return false
+                            if (isLiveScrubbing) return true
+
                             val deltaX = e2.x - e1.x
                             val deltaY = e2.y - e1.y
 
@@ -498,7 +474,6 @@ fun PlayerScreen(
 
                             // Swiping UP and DOWN is ALWAYS Previous and Next respectively
                             if (abs(velocityY) > abs(velocityX) && abs(deltaY) > 80) {
-                                isLiveScrubbing = false
                                 showScrubHud = false
                                 if (deltaY < 0) {
                                     // Swipe UP -> PREVIOUS video
@@ -506,31 +481,6 @@ fun PlayerScreen(
                                 } else {
                                     // Swipe DOWN -> NEXT video
                                     skipToNext()
-                                }
-                                return true
-                            }
-
-                            // Quick horizontal fling when not actively dragging: quick scrub jump (0.5 to 5.0s)
-                            if (abs(velocityX) > abs(velocityY) && abs(deltaX) > 80 && !isLiveScrubbing) {
-                                val jumpSec = if (deltaX > 0) {
-                                    (abs(velocityX) / 1000f).coerceIn(0.5f, 5.0f)
-                                } else {
-                                    -(abs(velocityX) / 1000f).coerceIn(0.5f, 5.0f)
-                                }
-                                val fineJumpSec = (round(jumpSec * 10f) / 10f)
-                                val maxDur = if (durationMs > 0) durationMs else 1L
-                                val target = (exoPlayer.currentPosition + (fineJumpSec * 1000).toLong()).coerceIn(0L, maxDur)
-
-                                exoPlayer.seekTo(target)
-                                currentPositionMs = target
-                                vibrate(30L)
-
-                                scrubHudDeltaSeconds = fineJumpSec
-                                scrubHudTargetMs = target
-                                showScrubHud = true
-                                scope.launch {
-                                    delay(900)
-                                    showScrubHud = false
                                 }
                                 return true
                             }
@@ -545,20 +495,142 @@ fun PlayerScreen(
                                 touchDownX = event.x
                                 touchDownY = event.y
                                 touchDownTime = System.currentTimeMillis()
-                                scrubBaseMs = exoPlayer.currentPosition
+                                currentScrubDeltaX = 0f
+                                currentScrubDeltaY = 0f
                                 isLiveScrubbing = false
                             }
+
+                            MotionEvent.ACTION_MOVE -> {
+                                val deltaX = event.x - touchDownX
+                                val deltaY = event.y - touchDownY
+                                currentScrubDeltaX = deltaX
+                                currentScrubDeltaY = deltaY
+
+                                if (!isLiveScrubbing) {
+                                    // If predominantly horizontal and dragged past threshold (30px), start scrubbing immediately!
+                                    if (abs(deltaX) > 30f && abs(deltaX) > abs(deltaY) * 1.2f) {
+                                        isLiveScrubbing = true
+                                        pendingSingleTapJob?.cancel()
+                                        consecutiveTaps = 0
+                                        lastTapZone = TapZone.NONE
+                                        hideScrubHudJob?.cancel()
+
+                                        wasPlayingBeforeScrub = exoPlayer.isPlaying
+                                        scrubStartMs = exoPlayer.currentPosition
+                                        exoPlayer.volume = 0f // Mute audio during scrub for clean visual seek
+                                        vibrate(25L)
+
+                                        scrubJob?.cancel()
+                                        scrubJob = scope.launch {
+                                            var lastBackwardSeekTime = 0L
+
+                                            while (isActive && isLiveScrubbing) {
+                                                val dx = currentScrubDeltaX
+                                                val absDx = abs(dx)
+                                                val deadZone = 25f
+                                                val screenWidth = resources.displayMetrics.widthPixels.toFloat()
+                                                val maxDist = screenWidth * 0.45f
+
+                                                if (absDx <= deadZone) {
+                                                    // In dead zone: pause / hold position
+                                                    if (exoPlayer.isPlaying) {
+                                                        exoPlayer.pause()
+                                                    }
+                                                    scrubHudSpeed = 0f
+                                                    scrubHudIsForward = dx >= 0
+                                                    scrubHudTargetMs = exoPlayer.currentPosition
+                                                    scrubHudDeltaSeconds = (exoPlayer.currentPosition - scrubStartMs) / 1000f
+                                                    showScrubHud = true
+                                                } else {
+                                                    val effDist = absDx - deadZone
+                                                    val norm = (effDist / maxDist).coerceIn(0f, 1f)
+                                                    // Power curve: 0.25x up to 12.0x speed
+                                                    val speed = 0.25f + 11.75f * norm.pow(1.5f)
+                                                    val roundedSpeed = (round(speed * 10f) / 10f)
+
+                                                    if (dx > 0) {
+                                                        // Forward scrubbing: use native playback speed for fluid decoding
+                                                        scrubHudIsForward = true
+                                                        scrubHudSpeed = roundedSpeed
+                                                        showScrubHud = true
+
+                                                        val playSpeed = roundedSpeed.coerceIn(0.25f, 8.0f)
+                                                        exoPlayer.setPlaybackSpeed(playSpeed)
+                                                        val maxDur = if (durationMs > 0) durationMs else 1L
+                                                        if (!exoPlayer.isPlaying && exoPlayer.currentPosition < maxDur) {
+                                                            exoPlayer.play()
+                                                        }
+
+                                                        if (roundedSpeed > 8.0f) {
+                                                            val extraMs = ((roundedSpeed - 8.0f) * 0.033f * 1000f).toLong()
+                                                            val target = (exoPlayer.currentPosition + extraMs).coerceAtMost(maxDur)
+                                                            exoPlayer.seekTo(target)
+                                                        }
+
+                                                        currentPositionMs = exoPlayer.currentPosition
+                                                        scrubHudTargetMs = exoPlayer.currentPosition
+                                                        scrubHudDeltaSeconds = (exoPlayer.currentPosition - scrubStartMs) / 1000f
+                                                    } else {
+                                                        // Backward scrubbing
+                                                        scrubHudIsForward = false
+                                                        scrubHudSpeed = roundedSpeed
+                                                        showScrubHud = true
+
+                                                        if (exoPlayer.isPlaying) {
+                                                            exoPlayer.pause()
+                                                        }
+
+                                                        val now = System.currentTimeMillis()
+                                                        if (now - lastBackwardSeekTime >= 55L) {
+                                                            val dtSec = if (lastBackwardSeekTime == 0L) 0.055f else ((now - lastBackwardSeekTime).coerceAtMost(100L) / 1000f)
+                                                            val stepMs = (roundedSpeed * dtSec * 1000f).toLong().coerceAtLeast(10L)
+                                                            val newPos = (exoPlayer.currentPosition - stepMs).coerceAtLeast(0L)
+
+                                                            if (roundedSpeed > 3.0f) {
+                                                                exoPlayer.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+                                                            } else {
+                                                                exoPlayer.setSeekParameters(SeekParameters.EXACT)
+                                                            }
+                                                            exoPlayer.seekTo(newPos)
+                                                            lastBackwardSeekTime = now
+                                                            currentPositionMs = newPos
+                                                            scrubHudTargetMs = newPos
+                                                            scrubHudDeltaSeconds = (newPos - scrubStartMs) / 1000f
+                                                        }
+                                                    }
+                                                }
+                                                delay(33) // ~30 fps updates
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             MotionEvent.ACTION_UP -> {
                                 if (isLiveScrubbing) {
-                                    // Commit the fine-tuned scrub position
-                                    exoPlayer.seekTo(targetSeekMs)
-                                    currentPositionMs = targetSeekMs
-                                    vibrate(30L)
-                                    scope.launch {
-                                        delay(750)
+                                    isLiveScrubbing = false
+                                    scrubJob?.cancel()
+
+                                    // Restore playback speed, exact seek parameters, and audio volume
+                                    exoPlayer.setPlaybackSpeed(1.0f)
+                                    exoPlayer.setSeekParameters(SeekParameters.EXACT)
+                                    exoPlayer.volume = 1.0f
+
+                                    if (wasPlayingBeforeScrub) {
+                                        exoPlayer.play()
+                                    } else {
+                                        exoPlayer.pause()
+                                    }
+
+                                    currentPositionMs = exoPlayer.currentPosition
+                                    scrubHudTargetMs = exoPlayer.currentPosition
+                                    vibrate(25L)
+
+                                    hideScrubHudJob?.cancel()
+                                    hideScrubHudJob = scope.launch {
+                                        delay(800)
                                         showScrubHud = false
                                     }
-                                    isLiveScrubbing = false
                                 } else {
                                     // Check if this was a tap (small travel distance & short press duration)
                                     val moveDist = Math.hypot(
@@ -706,7 +778,19 @@ fun PlayerScreen(
                                 }
                             }
                             MotionEvent.ACTION_CANCEL -> {
-                                isLiveScrubbing = false
+                                if (isLiveScrubbing) {
+                                    isLiveScrubbing = false
+                                    scrubJob?.cancel()
+                                    exoPlayer.setPlaybackSpeed(1.0f)
+                                    exoPlayer.setSeekParameters(SeekParameters.EXACT)
+                                    exoPlayer.volume = 1.0f
+                                    if (wasPlayingBeforeScrub) {
+                                        exoPlayer.play()
+                                    } else {
+                                        exoPlayer.pause()
+                                    }
+                                    showScrubHud = false
+                                }
                                 pendingSingleTapJob?.cancel()
                                 consecutiveTaps = 0
                             }
@@ -740,9 +824,11 @@ fun PlayerScreen(
         // Scrubbing HUD (on Left/Right drag)
         ScrubbingHud(
             visible = showScrubHud,
+            speed = scrubHudSpeed,
             deltaSeconds = scrubHudDeltaSeconds,
             targetPositionMs = scrubHudTargetMs,
             durationMs = durationMs,
+            isForward = scrubHudIsForward,
             modifier = Modifier.align(Alignment.Center)
         )
 
