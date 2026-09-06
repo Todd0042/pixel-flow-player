@@ -130,7 +130,7 @@ fun ScrubbingHud(
                 )
 
                 if (!isPaused) {
-                    val progress = (speed / 12f).coerceIn(0.05f, 1f)
+                    val progress = (speed / 7.5f).coerceIn(0.05f, 1f)
                     val fillWidth = (barWidth / 2f) * progress
                     if (isForward) {
                         drawRoundRect(

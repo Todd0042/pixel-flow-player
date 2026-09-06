@@ -544,34 +544,27 @@ fun PlayerScreen(
                                                 } else {
                                                     val effDist = absDx - deadZone
                                                     val norm = (effDist / maxDist).coerceIn(0f, 1f)
-                                                    // Power curve: 0.25x up to 12.0x speed
-                                                    val speed = 0.25f + 11.75f * norm.pow(1.5f)
-                                                    val roundedSpeed = (round(speed * 10f) / 10f)
+                                                    // Power curve capped strictly to +/- 7.5x
+                                                    val speed = (0.25f + 7.25f * norm.pow(1.5f)).coerceIn(0.25f, 7.5f)
+                                                    val roundedSpeed = (round(speed * 10f) / 10f).coerceIn(0.25f, 7.5f)
 
                                                     if (dx > 0) {
-                                                        // Forward scrubbing: use native playback speed for fluid decoding
+                                                        // Forward scrubbing: native playback speed capped strictly at 7.5x
                                                         scrubHudIsForward = true
                                                         scrubHudSpeed = roundedSpeed
                                                         showScrubHud = true
 
-                                                        val playSpeed = roundedSpeed.coerceIn(0.25f, 8.0f)
-                                                        exoPlayer.setPlaybackSpeed(playSpeed)
+                                                        exoPlayer.setPlaybackSpeed(roundedSpeed)
                                                         val maxDur = if (durationMs > 0) durationMs else 1L
                                                         if (!exoPlayer.isPlaying && exoPlayer.currentPosition < maxDur) {
                                                             exoPlayer.play()
-                                                        }
-
-                                                        if (roundedSpeed > 8.0f) {
-                                                            val extraMs = ((roundedSpeed - 8.0f) * 0.033f * 1000f).toLong()
-                                                            val target = (exoPlayer.currentPosition + extraMs).coerceAtMost(maxDur)
-                                                            exoPlayer.seekTo(target)
                                                         }
 
                                                         currentPositionMs = exoPlayer.currentPosition
                                                         scrubHudTargetMs = exoPlayer.currentPosition
                                                         scrubHudDeltaSeconds = (exoPlayer.currentPosition - scrubStartMs) / 1000f
                                                     } else {
-                                                        // Backward scrubbing
+                                                        // Backward scrubbing: throttled seeks capped strictly at 7.5x
                                                         scrubHudIsForward = false
                                                         scrubHudSpeed = roundedSpeed
                                                         showScrubHud = true
@@ -581,12 +574,12 @@ fun PlayerScreen(
                                                         }
 
                                                         val now = System.currentTimeMillis()
-                                                        if (now - lastBackwardSeekTime >= 55L) {
-                                                            val dtSec = if (lastBackwardSeekTime == 0L) 0.055f else ((now - lastBackwardSeekTime).coerceAtMost(100L) / 1000f)
+                                                        if (now - lastBackwardSeekTime >= 65L) {
+                                                            val dtSec = if (lastBackwardSeekTime == 0L) 0.065f else ((now - lastBackwardSeekTime).coerceAtMost(100L) / 1000f)
                                                             val stepMs = (roundedSpeed * dtSec * 1000f).toLong().coerceAtLeast(10L)
                                                             val newPos = (exoPlayer.currentPosition - stepMs).coerceAtLeast(0L)
 
-                                                            if (roundedSpeed > 3.0f) {
+                                                            if (roundedSpeed > 2.5f) {
                                                                 exoPlayer.setSeekParameters(SeekParameters.CLOSEST_SYNC)
                                                             } else {
                                                                 exoPlayer.setSeekParameters(SeekParameters.EXACT)
