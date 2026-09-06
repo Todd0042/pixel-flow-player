@@ -9,6 +9,10 @@ data class VideoFolder(
     val totalCount: Int,
     val portraitCount: Int,
     val landscapeCount: Int,
+    val favoriteCount: Int = 0,
+    val favoritePortraitCount: Int = 0,
+    val favoriteLandscapeCount: Int = 0,
+    val isFavoritesAlbum: Boolean = false,
     val isCustomTree: Boolean = false,
     val treeUri: Uri? = null
 )

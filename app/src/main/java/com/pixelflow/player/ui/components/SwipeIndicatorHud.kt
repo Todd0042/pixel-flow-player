@@ -14,8 +14,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material3.Icon
@@ -36,7 +34,6 @@ enum class SwipeDirection {
 fun SwipeIndicatorHud(
     visible: Boolean,
     direction: SwipeDirection,
-    isPortrait: Boolean,
     title: String,
     currentIndex: Int,
     totalCount: Int,
@@ -48,19 +45,13 @@ fun SwipeIndicatorHud(
         exit = fadeOut(),
         modifier = modifier
     ) {
-        val icon = when {
-            isPortrait && direction == SwipeDirection.NEXT -> Icons.Default.ArrowUpward
-            isPortrait && direction == SwipeDirection.PREVIOUS -> Icons.Default.ArrowDownward
-            !isPortrait && direction == SwipeDirection.NEXT -> Icons.AutoMirrored.Filled.ArrowForward
-            else -> Icons.AutoMirrored.Filled.ArrowBack
-        }
-
+        val icon = if (direction == SwipeDirection.NEXT) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward
         val actionText = if (direction == SwipeDirection.NEXT) "Next Video" else "Previous Video"
 
         Column(
             modifier = Modifier
                 .background(
-                    color = Color.Black.copy(alpha = 0.75f),
+                    color = Color.Black.copy(alpha = 0.78f),
                     shape = RoundedCornerShape(20.dp)
                 )
                 .padding(horizontal = 20.dp, vertical = 14.dp),

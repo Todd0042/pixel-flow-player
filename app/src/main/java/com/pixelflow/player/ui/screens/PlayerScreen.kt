@@ -81,6 +81,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
 import com.pixelflow.player.MainActivity
@@ -91,6 +92,7 @@ import com.pixelflow.player.data.VideoOrientation
 import com.pixelflow.player.data.VideoScaleMode
 import com.pixelflow.player.ui.components.FavoriteHeartHud
 import com.pixelflow.player.ui.components.ScalingHud
+import com.pixelflow.player.ui.components.ScrubbingHud
 import com.pixelflow.player.ui.components.SwipeDirection
 import com.pixelflow.player.ui.components.SwipeIndicatorHud
 import com.pixelflow.player.ui.theme.PixelHeartRed
@@ -98,6 +100,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.round
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -131,6 +134,11 @@ fun PlayerScreen(
     var lastFavoriteStatus by remember { mutableStateOf(currentVideo.isFavorite) }
     var showSwipeHud by remember { mutableStateOf(false) }
     var lastSwipeDirection by remember { mutableStateOf(SwipeDirection.NEXT) }
+
+    // Scrubbing HUD State
+    var showScrubHud by remember { mutableStateOf(false) }
+    var scrubHudDeltaSeconds by remember { mutableFloatStateOf(0f) }
+    var scrubHudTargetMs by remember { mutableLongStateOf(0L) }
 
     fun vibrate(durationMs: Long = 40L) {
         try {
@@ -200,6 +208,7 @@ fun PlayerScreen(
         ExoPlayer.Builder(context).build().apply {
             setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
             setWakeMode(C.WAKE_MODE_LOCAL)
+            setSeekParameters(SeekParameters.EXACT)
             playWhenReady = true
             repeatMode = Player.REPEAT_MODE_ALL
         }
@@ -399,8 +408,18 @@ fun PlayerScreen(
 
                     playerViewRef = this
 
+                    var isLiveScrubbing = false
+                    var scrubBaseMs = 0L
+                    var targetSeekMs = 0L
+                    var finalDeltaSec = 0f
+
                     val gestureDetector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
-                        override fun onDown(e: MotionEvent): Boolean = true
+                        override fun onDown(e: MotionEvent): Boolean {
+                            scrubBaseMs = exoPlayer.currentPosition
+                            isLiveScrubbing = false
+                            finalDeltaSec = 0f
+                            return true
+                        }
 
                         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                             isControlsVisible = !isControlsVisible
@@ -416,6 +435,38 @@ fun PlayerScreen(
                             triggerFavoriteToggle()
                         }
 
+                        override fun onScroll(
+                            e1: MotionEvent?,
+                            e2: MotionEvent,
+                            distanceX: Float,
+                            distanceY: Float
+                        ): Boolean {
+                            if (e1 == null) return false
+                            val totalDeltaX = e2.x - e1.x
+                            val totalDeltaY = e2.y - e1.y
+
+                            // Horizontal Drag: Fine-tuned scrubbing (0.1 to 5.0 seconds)
+                            if (abs(totalDeltaX) > abs(totalDeltaY) && abs(totalDeltaX) > 20) {
+                                isLiveScrubbing = true
+                                val screenWidth = resources.displayMetrics.widthPixels.toFloat()
+                                // Half screen width maps to 5.0 seconds for high precision
+                                val fraction = (totalDeltaX / (screenWidth * 0.45f)).coerceIn(-1.0f, 1.0f)
+                                val rawSeconds = fraction * 5.0f
+                                // Round to nearest 0.1s
+                                val roundedSec = (round(rawSeconds * 10f) / 10f)
+                                finalDeltaSec = roundedSec
+
+                                val maxDur = if (durationMs > 0) durationMs else 1L
+                                targetSeekMs = (scrubBaseMs + (roundedSec * 1000).toLong()).coerceIn(0L, maxDur)
+
+                                scrubHudDeltaSeconds = roundedSec
+                                scrubHudTargetMs = targetSeekMs
+                                showScrubHud = true
+                                return true
+                            }
+                            return false
+                        }
+
                         override fun onFling(
                             e1: MotionEvent?,
                             e2: MotionEvent,
@@ -426,34 +477,63 @@ fun PlayerScreen(
                             val deltaX = e2.x - e1.x
                             val deltaY = e2.y - e1.y
 
-                            val isPortrait = orientation == VideoOrientation.PORTRAIT
-
-                            if (isPortrait) {
-                                // Portrait: Swipe Up/Down
-                                if (abs(deltaY) > abs(deltaX) && abs(deltaY) > 80) {
-                                    if (deltaY < 0) {
-                                        skipToNext()
-                                    } else {
-                                        skipToPrevious()
-                                    }
-                                    return true
+                            // Swiping UP and DOWN is ALWAYS Previous and Next respectively
+                            if (abs(velocityY) > abs(velocityX) && abs(deltaY) > 80) {
+                                isLiveScrubbing = false
+                                showScrubHud = false
+                                if (deltaY < 0) {
+                                    // Swipe UP -> PREVIOUS video
+                                    skipToPrevious()
+                                } else {
+                                    // Swipe DOWN -> NEXT video
+                                    skipToNext()
                                 }
-                            } else {
-                                // Landscape: Swipe Left/Right
-                                if (abs(deltaX) > abs(deltaY) && abs(deltaX) > 80) {
-                                    if (deltaX < 0) {
-                                        skipToNext()
-                                    } else {
-                                        skipToPrevious()
-                                    }
-                                    return true
-                                }
+                                return true
                             }
+
+                            // Quick horizontal fling when not actively dragging: quick scrub jump (0.5 to 5.0s)
+                            if (abs(velocityX) > abs(velocityY) && abs(deltaX) > 80 && !isLiveScrubbing) {
+                                val jumpSec = if (deltaX > 0) {
+                                    (abs(velocityX) / 1000f).coerceIn(0.5f, 5.0f)
+                                } else {
+                                    -(abs(velocityX) / 1000f).coerceIn(0.5f, 5.0f)
+                                }
+                                val fineJumpSec = (round(jumpSec * 10f) / 10f)
+                                val maxDur = if (durationMs > 0) durationMs else 1L
+                                val target = (exoPlayer.currentPosition + (fineJumpSec * 1000).toLong()).coerceIn(0L, maxDur)
+
+                                exoPlayer.seekTo(target)
+                                currentPositionMs = target
+                                vibrate(30L)
+
+                                scrubHudDeltaSeconds = fineJumpSec
+                                scrubHudTargetMs = target
+                                showScrubHud = true
+                                scope.launch {
+                                    delay(900)
+                                    showScrubHud = false
+                                }
+                                return true
+                            }
+
                             return false
                         }
                     })
 
                     setOnTouchListener { _, event ->
+                        if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
+                            if (isLiveScrubbing) {
+                                // Commit the fine-tuned scrub position
+                                exoPlayer.seekTo(targetSeekMs)
+                                currentPositionMs = targetSeekMs
+                                vibrate(30L)
+                                scope.launch {
+                                    delay(750)
+                                    showScrubHud = false
+                                }
+                                isLiveScrubbing = false
+                            }
+                        }
                         gestureDetector.onTouchEvent(event)
                         true
                     }
@@ -470,6 +550,15 @@ fun PlayerScreen(
                 .padding(top = 48.dp)
         )
 
+        // Scrubbing HUD (on Left/Right swipe or drag)
+        ScrubbingHud(
+            visible = showScrubHud,
+            deltaSeconds = scrubHudDeltaSeconds,
+            targetPositionMs = scrubHudTargetMs,
+            durationMs = durationMs,
+            modifier = Modifier.align(Alignment.Center)
+        )
+
         // Favorite HUD (on Long Press)
         FavoriteHeartHud(
             visible = showFavoriteHud,
@@ -477,11 +566,10 @@ fun PlayerScreen(
             modifier = Modifier.align(Alignment.Center)
         )
 
-        // Swipe Action HUD (on Swipe Up/Down or Left/Right)
+        // Swipe Action HUD (on Swipe Up/Down: Previous / Next)
         SwipeIndicatorHud(
             visible = showSwipeHud,
             direction = lastSwipeDirection,
-            isPortrait = orientation == VideoOrientation.PORTRAIT,
             title = currentVideo.title,
             currentIndex = currentIndex,
             totalCount = videos.size,
@@ -649,11 +737,7 @@ fun PlayerScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (orientation == VideoOrientation.PORTRAIT) {
-                                "Swipe Up/Down: Skip • Double-Tap: Scale • Hold: Favorite"
-                            } else {
-                                "Swipe Left/Right: Skip • Double-Tap: Scale • Hold: Favorite"
-                            },
+                            text = "Swipe Up: Prev • Swipe Down: Next • Left/Right: Scrub (0.1–5s) • Hold: Fav",
                             color = Color.White.copy(alpha = 0.8f),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium

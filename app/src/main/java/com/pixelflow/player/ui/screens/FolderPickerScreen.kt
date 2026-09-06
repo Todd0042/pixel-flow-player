@@ -26,7 +26,9 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
@@ -70,6 +72,7 @@ import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
 import com.pixelflow.player.data.VideoFolder
+import com.pixelflow.player.ui.theme.PixelHeartRed
 import com.pixelflow.player.data.VideoRepository
 import kotlinx.coroutines.launch
 
@@ -248,9 +251,9 @@ private fun AlbumCard(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Folder,
+                        imageVector = if (folder.isFavoritesAlbum) Icons.Default.Favorite else Icons.Default.Folder,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                        tint = if (folder.isFavoritesAlbum) PixelHeartRed else MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
                         modifier = Modifier.size(56.dp)
                     )
                 }
@@ -281,29 +284,53 @@ private fun AlbumCard(
             ) {
                 // Top total badge
                 Surface(
-                    color = Color.Black.copy(alpha = 0.65f),
+                    color = if (folder.isFavoritesAlbum) PixelHeartRed.copy(alpha = 0.85f) else Color.Black.copy(alpha = 0.65f),
                     shape = CircleShape,
                     modifier = Modifier.align(Alignment.End)
                 ) {
-                    Text(
-                        text = "${folder.totalCount}",
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (folder.isFavoritesAlbum) {
+                            Icon(
+                                imageVector = Icons.Default.Favorite,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                        }
+                        Text(
+                            text = "${folder.totalCount}",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
 
                 // Bottom title & orientation breakdown
                 Column {
-                    Text(
-                        text = folder.name,
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (folder.isFavoritesAlbum) {
+                            Icon(
+                                imageVector = Icons.Default.Favorite,
+                                contentDescription = null,
+                                tint = PixelHeartRed,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        Text(
+                            text = folder.name,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(4.dp))
 

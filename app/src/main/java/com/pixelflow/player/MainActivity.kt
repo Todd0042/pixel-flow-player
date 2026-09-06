@@ -23,11 +23,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import com.pixelflow.player.data.FavoriteFilter
 import com.pixelflow.player.data.PlayOrder
 import com.pixelflow.player.data.VideoFolder
 import com.pixelflow.player.data.VideoItem
 import com.pixelflow.player.data.VideoOrientation
 import com.pixelflow.player.data.VideoRepository
+import com.pixelflow.player.ui.components.FavoriteFilterDialog
 import com.pixelflow.player.ui.components.OrientationDialog
 import com.pixelflow.player.ui.components.PlayOrderDialog
 import com.pixelflow.player.ui.screens.FolderPickerScreen
@@ -65,11 +67,13 @@ private fun MainApp(repository: VideoRepository) {
 
     // Selected state
     var selectedFolder by remember { mutableStateOf<VideoFolder?>(null) }
+    var selectedFavoriteFilter by remember { mutableStateOf(FavoriteFilter.ALL) }
     var selectedOrientation by remember { mutableStateOf<VideoOrientation?>(null) }
     var currentPlaylist by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var isLoadingPlaylist by remember { mutableStateOf(false) }
 
-    // Dialog state
+    // Dialog flow state
+    var folderForFilterDialog by remember { mutableStateOf<VideoFolder?>(null) }
     var folderForOrientationDialog by remember { mutableStateOf<VideoFolder?>(null) }
     var showPlayOrderDialog by remember { mutableStateOf(false) }
 
@@ -105,15 +109,20 @@ private fun MainApp(repository: VideoRepository) {
         hasPermission = permissions.values.any { it }
     }
 
-    fun startPlaying(folder: VideoFolder, orientation: VideoOrientation, order: PlayOrder) {
+    fun startPlaying(
+        folder: VideoFolder,
+        favoriteFilter: FavoriteFilter,
+        orientation: VideoOrientation,
+        order: PlayOrder
+    ) {
         isLoadingPlaylist = true
         scope.launch {
-            val list = repository.getVideosForFolder(context, folder, orientation, order)
+            val list = repository.getVideosForFolder(context, folder, favoriteFilter, orientation, order)
             isLoadingPlaylist = false
             if (list.isEmpty()) {
                 Toast.makeText(
                     context,
-                    "No ${orientation.label.lowercase()} videos found in ${folder.name}",
+                    "No ${orientation.label.lowercase()} videos found matching selection",
                     Toast.LENGTH_SHORT
                 ).show()
             } else {
@@ -134,16 +143,47 @@ private fun MainApp(repository: VideoRepository) {
                     permissionLauncher.launch(requiredPermissions)
                 },
                 onFolderSelected = { folder ->
-                    folderForOrientationDialog = folder
+                    selectedFolder = folder
+                    folderForFilterDialog = folder
                 }
             )
 
+            // Step 1: Ask All, Favorites Only, or Non-Favorites Only
+            folderForFilterDialog?.let { folder ->
+                FavoriteFilterDialog(
+                    folder = folder,
+                    onFilterSelected = { filter ->
+                        selectedFavoriteFilter = filter
+                        folderForFilterDialog = null
+                        folderForOrientationDialog = folder
+                    },
+                    onDismiss = {
+                        folderForFilterDialog = null
+                    }
+                )
+            }
+
             // Step 2: Ask Portrait or Landscape
             folderForOrientationDialog?.let { folder ->
+                val effectivePortrait = when (selectedFavoriteFilter) {
+                    FavoriteFilter.ALL -> folder.portraitCount
+                    FavoriteFilter.FAVORITES_ONLY -> folder.favoritePortraitCount
+                    FavoriteFilter.NON_FAVORITES_ONLY -> (folder.portraitCount - folder.favoritePortraitCount).coerceAtLeast(0)
+                }
+                val effectiveLandscape = when (selectedFavoriteFilter) {
+                    FavoriteFilter.ALL -> folder.landscapeCount
+                    FavoriteFilter.FAVORITES_ONLY -> folder.favoriteLandscapeCount
+                    FavoriteFilter.NON_FAVORITES_ONLY -> (folder.landscapeCount - folder.favoriteLandscapeCount).coerceAtLeast(0)
+                }
+                val displayFolder = folder.copy(
+                    portraitCount = effectivePortrait,
+                    landscapeCount = effectiveLandscape,
+                    totalCount = effectivePortrait + effectiveLandscape
+                )
+
                 OrientationDialog(
-                    folder = folder,
+                    folder = displayFolder,
                     onOrientationSelected = { orientation ->
-                        selectedFolder = folder
                         selectedOrientation = orientation
                         folderForOrientationDialog = null
                         showPlayOrderDialog = true
@@ -154,14 +194,21 @@ private fun MainApp(repository: VideoRepository) {
                 )
             }
 
-            // Step 3 & 4: Ask Newest, Oldest, Longest, or Random
+            // Step 3: Ask Newest, Oldest, Longest, or Random
             if (showPlayOrderDialog && selectedFolder != null && selectedOrientation != null) {
                 val folder = selectedFolder!!
                 val orientation = selectedOrientation!!
-                val count = if (orientation == VideoOrientation.PORTRAIT) {
-                    folder.portraitCount
-                } else {
-                    folder.landscapeCount
+                val count = when (orientation) {
+                    VideoOrientation.PORTRAIT -> when (selectedFavoriteFilter) {
+                        FavoriteFilter.ALL -> folder.portraitCount
+                        FavoriteFilter.FAVORITES_ONLY -> folder.favoritePortraitCount
+                        FavoriteFilter.NON_FAVORITES_ONLY -> (folder.portraitCount - folder.favoritePortraitCount).coerceAtLeast(0)
+                    }
+                    VideoOrientation.LANDSCAPE -> when (selectedFavoriteFilter) {
+                        FavoriteFilter.ALL -> folder.landscapeCount
+                        FavoriteFilter.FAVORITES_ONLY -> folder.favoriteLandscapeCount
+                        FavoriteFilter.NON_FAVORITES_ONLY -> (folder.landscapeCount - folder.favoriteLandscapeCount).coerceAtLeast(0)
+                    }
                 }
 
                 PlayOrderDialog(
@@ -169,7 +216,7 @@ private fun MainApp(repository: VideoRepository) {
                     videoCount = count,
                     onOrderSelected = { playOrder ->
                         showPlayOrderDialog = false
-                        startPlaying(folder, orientation, playOrder)
+                        startPlaying(folder, selectedFavoriteFilter, orientation, playOrder)
                     },
                     onDismiss = {
                         showPlayOrderDialog = false
