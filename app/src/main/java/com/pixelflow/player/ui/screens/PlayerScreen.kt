@@ -567,19 +567,19 @@ fun PlayerScreen(
                             pendingSingleTapJob?.cancel()
                             consecutiveTaps = 0
 
-                            // Swiping UP and DOWN is ALWAYS Previous and Next respectively
+                            // Swiping UP is Next video, Swiping DOWN is Previous video
                             if (abs(velocityY) > abs(velocityX) && abs(deltaY) > 80) {
                                 showScrubHud = false
                                 val viewHeight = if (height > 0) height.toFloat() else resources.displayMetrics.heightPixels.toFloat()
                                 if (deltaY < 0) {
-                                    // Swipe UP -> PREVIOUS video (only on top 2/3 of screen to avoid conflicting with Android Home gesture)
+                                    // Swipe UP -> NEXT video (only on top 2/3 of screen to avoid conflicting with Android Home gesture)
                                     if (e1.y <= viewHeight * (2f / 3f)) {
-                                        skipToPrevious()
+                                        skipToNext()
                                         return true
                                     }
                                 } else {
-                                    // Swipe DOWN -> NEXT video
-                                    skipToNext()
+                                    // Swipe DOWN -> PREVIOUS video
+                                    skipToPrevious()
                                     return true
                                 }
                             }

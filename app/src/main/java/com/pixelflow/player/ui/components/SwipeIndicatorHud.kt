@@ -45,7 +45,7 @@ fun SwipeIndicatorHud(
         exit = fadeOut(),
         modifier = modifier
     ) {
-        val icon = if (direction == SwipeDirection.NEXT) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward
+        val icon = if (direction == SwipeDirection.NEXT) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward
         val actionText = if (direction == SwipeDirection.NEXT) "Next Video" else "Previous Video"
 
         Column(
