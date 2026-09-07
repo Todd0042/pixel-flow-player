@@ -475,14 +475,18 @@ fun PlayerScreen(
                             // Swiping UP and DOWN is ALWAYS Previous and Next respectively
                             if (abs(velocityY) > abs(velocityX) && abs(deltaY) > 80) {
                                 showScrubHud = false
+                                val viewHeight = if (height > 0) height.toFloat() else resources.displayMetrics.heightPixels.toFloat()
                                 if (deltaY < 0) {
-                                    // Swipe UP -> PREVIOUS video
-                                    skipToPrevious()
+                                    // Swipe UP -> PREVIOUS video (only on top 2/3 of screen to avoid conflicting with Android Home gesture)
+                                    if (e1.y <= viewHeight * (2f / 3f)) {
+                                        skipToPrevious()
+                                        return true
+                                    }
                                 } else {
                                     // Swipe DOWN -> NEXT video
                                     skipToNext()
+                                    return true
                                 }
-                                return true
                             }
 
                             return false
