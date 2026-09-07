@@ -2,6 +2,7 @@ package com.pixelflow.player
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -41,15 +42,36 @@ class MainActivity : ComponentActivity() {
 
     private val repository = VideoRepository()
 
+    var isInPipMode by mutableStateOf(false)
+        private set
+
+    var onUserLeavePipTrigger: (() -> Unit)? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         setContent {
             PixelFlowTheme {
-                MainApp(repository = repository)
+                MainApp(
+                    repository = repository,
+                    isInPipMode = isInPipMode
+                )
             }
         }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        isInPipMode = isInPictureInPictureMode
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        onUserLeavePipTrigger?.invoke()
     }
 }
 
@@ -59,7 +81,7 @@ private enum class ScreenState {
 }
 
 @Composable
-private fun MainApp(repository: VideoRepository) {
+private fun MainApp(repository: VideoRepository, isInPipMode: Boolean) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -240,6 +262,7 @@ private fun MainApp(repository: VideoRepository) {
                     folder = selectedFolder!!,
                     videos = currentPlaylist,
                     orientation = selectedOrientation!!,
+                    isInPipMode = isInPipMode,
                     onExitPlayer = {
                         currentScreen = ScreenState.FOLDER_PICKER
                     }

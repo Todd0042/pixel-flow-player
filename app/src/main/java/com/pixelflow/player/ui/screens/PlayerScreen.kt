@@ -5,10 +5,12 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.graphics.Rect
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.util.Rational
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -85,6 +88,7 @@ import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
 import com.pixelflow.player.MainActivity
+import com.pixelflow.player.pip.PipManager
 import com.pixelflow.player.data.FavoritesHelper
 import com.pixelflow.player.data.VideoFolder
 import com.pixelflow.player.data.VideoItem
@@ -115,6 +119,7 @@ fun PlayerScreen(
     folder: VideoFolder,
     videos: List<VideoItem>,
     orientation: VideoOrientation,
+    isInPipMode: Boolean = false,
     onExitPlayer: () -> Unit
 ) {
     if (videos.isEmpty()) {
@@ -134,6 +139,53 @@ fun PlayerScreen(
     var currentPositionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(currentVideo.durationMs) }
     var isControlsVisible by remember { mutableStateOf(false) }
+
+    // Picture-in-Picture State & Helpers
+    var pipAspectRatio by remember {
+        val initialRatio = if (currentVideo.width > 0 && currentVideo.height > 0) {
+            PipManager.getClampedAspectRatio(currentVideo.width, currentVideo.height)
+        } else {
+            if (orientation == VideoOrientation.PORTRAIT) Rational(9, 16) else Rational(16, 9)
+        }
+        mutableStateOf(initialRatio)
+    }
+    var pipSourceRectHint by remember { mutableStateOf<Rect?>(null) }
+
+    fun updatePipParams(autoEnter: Boolean = true) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity != null) {
+            val params = PipManager.buildPipParams(
+                context = context,
+                aspectRatio = pipAspectRatio,
+                isPlaying = isPlaying,
+                sourceRectHint = pipSourceRectHint,
+                autoEnterEnabled = autoEnter
+            )
+            if (params != null) {
+                try {
+                    activity.setPictureInPictureParams(params)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    fun enterPipMode() {
+        if (activity != null) {
+            val params = PipManager.buildPipParams(
+                context = context,
+                aspectRatio = pipAspectRatio,
+                isPlaying = isPlaying,
+                sourceRectHint = pipSourceRectHint,
+                autoEnterEnabled = true
+            )
+            PipManager.enterPip(activity, params)
+        }
+    }
+
+    LaunchedEffect(pipAspectRatio, isPlaying, pipSourceRectHint) {
+        updatePipParams(autoEnter = true)
+    }
 
     // HUD States
     var showScaleHud by remember { mutableStateOf(false) }
@@ -308,6 +360,32 @@ fun PlayerScreen(
         }
     }
 
+    // Register PiP RemoteAction receiver and onUserLeaveHint fallback
+    DisposableEffect(context) {
+        val receiver = PipManager.registerPipReceiver(
+            context = context,
+            onPrevious = { skipToPrevious() },
+            onPlayPause = {
+                if (exoPlayer.isPlaying) {
+                    exoPlayer.pause()
+                } else {
+                    exoPlayer.play()
+                }
+            },
+            onNext = { skipToNext() }
+        )
+
+        (activity as? MainActivity)?.onUserLeavePipTrigger = {
+            enterPipMode()
+        }
+
+        onDispose {
+            PipManager.unregisterPipReceiver(context, receiver)
+            (activity as? MainActivity)?.onUserLeavePipTrigger = null
+            updatePipParams(autoEnter = false)
+        }
+    }
+
     // Configure Activity Window for True Immersive Edge-to-Edge Fullscreen
     DisposableEffect(Unit) {
         val window = activity?.window
@@ -344,6 +422,15 @@ fun PlayerScreen(
                     currentPositionMs = 0L
                     durationMs = currentVid.durationMs
                     currentVid.isFavorite = FavoritesHelper.isFavorite(context, currentVid)
+                    if (currentVid.width > 0 && currentVid.height > 0) {
+                        pipAspectRatio = PipManager.getClampedAspectRatio(currentVid.width, currentVid.height)
+                    }
+                }
+            }
+
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    pipAspectRatio = PipManager.getClampedAspectRatio(videoSize.width, videoSize.height)
                 }
             }
 
@@ -398,7 +485,7 @@ fun PlayerScreen(
         }
     }
 
-    BackHandler {
+    BackHandler(enabled = !isInPipMode) {
         onExitPlayer()
     }
 
@@ -421,6 +508,14 @@ fun PlayerScreen(
                     )
 
                     playerViewRef = this
+
+                    addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+                        val loc = IntArray(2)
+                        v.getLocationOnScreen(loc)
+                        if (v.width > 0 && v.height > 0) {
+                            pipSourceRectHint = Rect(loc[0], loc[1], loc[0] + v.width, loc[1] + v.height)
+                        }
+                    }
 
                     var isLiveScrubbing = false
                     var wasPlayingBeforeScrub = false
@@ -494,6 +589,7 @@ fun PlayerScreen(
                     })
 
                     setOnTouchListener { _, event ->
+                        if (isInPipMode) return@setOnTouchListener false
                         when (event.action) {
                             MotionEvent.ACTION_DOWN -> {
                                 touchDownX = event.x
@@ -801,7 +897,7 @@ fun PlayerScreen(
 
         // Scaling HUD (on Middle 1/3 Double Tap)
         ScalingHud(
-            visible = showScaleHud,
+            visible = showScaleHud && !isInPipMode,
             scaleMode = scaleMode,
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -810,7 +906,7 @@ fun PlayerScreen(
 
         // Double-Tap Jump HUD (Left 1/3: -5s/tap, Right 1/3: +5s/tap)
         DoubleTapSeekHud(
-            visible = showDoubleTapSeekHud,
+            visible = showDoubleTapSeekHud && !isInPipMode,
             isForward = isDoubleTapForward,
             totalSeconds = doubleTapTotalSeconds,
             modifier = Modifier
@@ -820,7 +916,7 @@ fun PlayerScreen(
 
         // Scrubbing HUD (on Left/Right drag)
         ScrubbingHud(
-            visible = showScrubHud,
+            visible = showScrubHud && !isInPipMode,
             speed = scrubHudSpeed,
             deltaSeconds = scrubHudDeltaSeconds,
             targetPositionMs = scrubHudTargetMs,
@@ -831,14 +927,14 @@ fun PlayerScreen(
 
         // Favorite HUD (on Long Press)
         FavoriteHeartHud(
-            visible = showFavoriteHud,
+            visible = showFavoriteHud && !isInPipMode,
             isFavorite = lastFavoriteStatus,
             modifier = Modifier.align(Alignment.Center)
         )
 
         // Swipe Action HUD (on Swipe Up/Down: Previous / Next)
         SwipeIndicatorHud(
-            visible = showSwipeHud,
+            visible = showSwipeHud && !isInPipMode,
             direction = lastSwipeDirection,
             title = currentVideo.title,
             currentIndex = currentIndex,
@@ -850,7 +946,7 @@ fun PlayerScreen(
 
         // Controls Overlay (toggled via Single Tap)
         AnimatedVisibility(
-            visible = isControlsVisible,
+            visible = isControlsVisible && !isInPipMode,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
@@ -929,6 +1025,22 @@ fun PlayerScreen(
                             imageVector = if (currentVideo.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Favorite in Photos",
                             tint = if (currentVideo.isFavorite) PixelHeartRed else Color.White
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    // Picture-in-Picture button
+                    IconButton(
+                        onClick = { enterPipMode() },
+                        modifier = Modifier
+                            .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                            .size(44.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PictureInPictureAlt,
+                            contentDescription = "Picture-in-Picture",
+                            tint = Color.White
                         )
                     }
                 }
