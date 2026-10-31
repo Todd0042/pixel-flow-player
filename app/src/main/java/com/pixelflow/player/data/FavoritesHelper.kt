@@ -13,9 +13,17 @@ import androidx.activity.result.IntentSenderRequest
 object FavoritesHelper {
 
     /**
-     * Checks whether the given video is currently marked as favorite in MediaStore.
+     * Checks whether the given video is currently marked as favorite.
+     * Prioritizes user explicit setting in local database, falling back to MediaStore.
      */
     fun isFavorite(context: Context, video: VideoItem): Boolean {
+        // 1. Check local DB override first
+        val localFav = PlaybackStatsDatabase.getInstance(context).getFavoriteSync(video.uri.toString())
+        if (localFav != null) {
+            return localFav
+        }
+
+        // 2. Query MediaStore
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
         val mediaStoreUri = resolveMediaStoreUri(context, video) ?: return false
 
@@ -63,6 +71,7 @@ object FavoritesHelper {
 
     /**
      * Resolves a media store content URI for the video item, even if it was loaded via SAF tree URI.
+     * Returns null if the video does not exist in MediaStore.
      */
     fun resolveMediaStoreUri(context: Context, video: VideoItem): Uri? {
         val uriStr = video.uri.toString()
@@ -75,7 +84,7 @@ object FavoritesHelper {
             return ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, video.id)
         }
 
-        // Otherwise try looking up in MediaStore by title/size
+        // 1. Try looking up in MediaStore by title and size
         try {
             val projection = arrayOf(MediaStore.Video.Media._ID)
             val selection = "${MediaStore.Video.Media.DISPLAY_NAME} = ? AND ${MediaStore.Video.Media.SIZE} = ?"
@@ -96,6 +105,27 @@ object FavoritesHelper {
             e.printStackTrace()
         }
 
-        return video.uri
+        // 2. Fallback: try looking up by DISPLAY_NAME alone
+        try {
+            val projection = arrayOf(MediaStore.Video.Media._ID)
+            val selection = "${MediaStore.Video.Media.DISPLAY_NAME} = ?"
+            val selectionArgs = arrayOf(video.title)
+            context.contentResolver.query(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                projection,
+                selection,
+                selectionArgs,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID))
+                    return ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        return null
     }
 }

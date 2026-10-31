@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -100,12 +101,25 @@ fun FavoriteFilterDialog(
                         modifier = Modifier.weight(1f),
                         onClick = { onFilterSelected(FavoriteFilter.FAVORITES_ONLY) }
                     )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     FilterOptionCard(
                         filter = FavoriteFilter.NON_FAVORITES_ONLY,
                         icon = Icons.Default.FavoriteBorder,
                         count = nonFavCount,
                         modifier = Modifier.weight(1f),
                         onClick = { onFilterSelected(FavoriteFilter.NON_FAVORITES_ONLY) }
+                    )
+                    FilterOptionCard(
+                        filter = FavoriteFilter.NON_FAVORITES_UNVIEWED,
+                        icon = Icons.Default.VisibilityOff,
+                        count = folder.unviewedNonFavoriteCount,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onFilterSelected(FavoriteFilter.NON_FAVORITES_UNVIEWED) }
                     )
                 }
             } else {
@@ -132,6 +146,14 @@ fun FavoriteFilterDialog(
                     count = nonFavCount,
                     modifier = Modifier.fillMaxWidth(),
                     onClick = { onFilterSelected(FavoriteFilter.NON_FAVORITES_ONLY) }
+                )
+
+                FilterOptionCard(
+                    filter = FavoriteFilter.NON_FAVORITES_UNVIEWED,
+                    icon = Icons.Default.VisibilityOff,
+                    count = folder.unviewedNonFavoriteCount,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { onFilterSelected(FavoriteFilter.NON_FAVORITES_UNVIEWED) }
                 )
             }
         }

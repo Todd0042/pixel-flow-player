@@ -14,11 +14,13 @@ class VideoRepository {
 
     companion object {
         const val FAVORITES_BUCKET_ID = "FAVORITES_VIRTUAL_ALBUM"
+        const val ALL_VIDEOS_BUCKET_ID = "ALL_VIDEOS_VIRTUAL_ALBUM"
     }
 
     suspend fun getVideoFolders(context: Context): List<VideoFolder> = withContext(Dispatchers.IO) {
         val folderMap = mutableMapOf<String, MutableList<VideoItem>>()
         val allFavorites = mutableListOf<VideoItem>()
+        val allVideos = mutableListOf<VideoItem>()
 
         val projection = mutableListOf(
             MediaStore.Video.Media._ID,
@@ -105,6 +107,7 @@ class VideoRepository {
                     )
 
                     folderMap.getOrPut(bucketId) { mutableListOf() }.add(videoItem)
+                    allVideos.add(videoItem)
 
                     if (isFav) {
                         allFavorites.add(videoItem)
@@ -113,6 +116,22 @@ class VideoRepository {
             }
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+
+        val statsDb = PlaybackStatsDatabase.getInstance(context)
+        val viewedUris = statsDb.getViewedUriStrings()
+        val skippedCounts = statsDb.getSkippedCounts(minSkips = 5)
+        val localFavorites = statsDb.getFavoritesMap()
+
+        allFavorites.clear()
+        for (video in allVideos) {
+            val localFav = localFavorites[video.uri.toString()]
+            if (localFav != null) {
+                video.isFavorite = localFav
+            }
+            if (video.isFavorite) {
+                allFavorites.add(video)
+            }
         }
 
         val regularFolders = folderMap.map { (bucketId, videos) ->
@@ -124,6 +143,12 @@ class VideoRepository {
             val favPortrait = videos.count { it.isFavorite && it.isPortrait }
             val favLandscape = videos.count { it.isFavorite && it.isLandscape }
 
+            // Unviewed and skipped stats
+            val unviewedNonFav = videos.count { !it.isFavorite && it.uri.toString() !in viewedUris }
+            val unviewedPortrait = videos.count { !it.isFavorite && it.isPortrait && it.uri.toString() !in viewedUris }
+            val unviewedLandscape = videos.count { !it.isFavorite && it.isLandscape && it.uri.toString() !in viewedUris }
+            val skippedCount = videos.count { !it.isFavorite && (skippedCounts[it.uri.toString()] ?: 0) >= 5 }
+
             VideoFolder(
                 bucketId = bucketId,
                 name = folderName,
@@ -134,6 +159,10 @@ class VideoRepository {
                 favoriteCount = favCount,
                 favoritePortraitCount = favPortrait,
                 favoriteLandscapeCount = favLandscape,
+                unviewedNonFavoriteCount = unviewedNonFav,
+                unviewedPortraitCount = unviewedPortrait,
+                unviewedLandscapeCount = unviewedLandscape,
+                skippedCount = skippedCount,
                 isFavoritesAlbum = false
             )
         }.sortedWith(
@@ -142,6 +171,40 @@ class VideoRepository {
         )
 
         val resultList = mutableListOf<VideoFolder>()
+
+        // Add All Albums virtual folder at the top of the album selector
+        if (allVideos.isNotEmpty()) {
+            val totalAll = allVideos.size
+            val allPortrait = allVideos.count { it.isPortrait }
+            val allLandscape = allVideos.count { it.isLandscape }
+            val allFavCount = allFavorites.size
+            val allFavPortrait = allFavorites.count { it.isPortrait }
+            val allFavLandscape = allFavorites.count { it.isLandscape }
+            val allUnviewedNonFav = allVideos.count { !it.isFavorite && it.uri.toString() !in viewedUris }
+            val allUnviewedPortrait = allVideos.count { !it.isFavorite && it.isPortrait && it.uri.toString() !in viewedUris }
+            val allUnviewedLandscape = allVideos.count { !it.isFavorite && it.isLandscape && it.uri.toString() !in viewedUris }
+            val allSkippedCount = allVideos.count { !it.isFavorite && (skippedCounts[it.uri.toString()] ?: 0) >= 5 }
+
+            resultList.add(
+                VideoFolder(
+                    bucketId = ALL_VIDEOS_BUCKET_ID,
+                    name = "All Albums",
+                    coverUri = allVideos.firstOrNull()?.uri,
+                    totalCount = totalAll,
+                    portraitCount = allPortrait,
+                    landscapeCount = allLandscape,
+                    favoriteCount = allFavCount,
+                    favoritePortraitCount = allFavPortrait,
+                    favoriteLandscapeCount = allFavLandscape,
+                    unviewedNonFavoriteCount = allUnviewedNonFav,
+                    unviewedPortraitCount = allUnviewedPortrait,
+                    unviewedLandscapeCount = allUnviewedLandscape,
+                    skippedCount = allSkippedCount,
+                    isFavoritesAlbum = false,
+                    isAllVideosAlbum = true
+                )
+            )
+        }
 
         // Add Favorites folder at the top of the album selector
         if (allFavorites.isNotEmpty()) {
@@ -160,7 +223,12 @@ class VideoRepository {
                     favoriteCount = favCount,
                     favoritePortraitCount = favPortrait,
                     favoriteLandscapeCount = favLandscape,
-                    isFavoritesAlbum = true
+                    unviewedNonFavoriteCount = 0,
+                    unviewedPortraitCount = 0,
+                    unviewedLandscapeCount = 0,
+                    skippedCount = 0,
+                    isFavoritesAlbum = true,
+                    isAllVideosAlbum = false
                 )
             )
         }
@@ -177,16 +245,21 @@ class VideoRepository {
         playOrder: PlayOrder
     ): List<VideoItem> = withContext(Dispatchers.IO) {
         val rawVideos = when {
+            folder.isAllVideosAlbum -> loadAllVideos(context)
             folder.isFavoritesAlbum -> loadAllFavoriteVideos(context)
             folder.isCustomTree && folder.treeUri != null -> loadVideosFromCustomTree(context, folder.treeUri)
             else -> loadVideosFromBucket(context, folder.bucketId)
         }
 
-        // Apply Favorites filter
+        // Apply Favorites and Viewed filter
         val favFiltered = when (favoriteFilter) {
             FavoriteFilter.ALL -> rawVideos
             FavoriteFilter.FAVORITES_ONLY -> rawVideos.filter { it.isFavorite }
             FavoriteFilter.NON_FAVORITES_ONLY -> rawVideos.filter { !it.isFavorite }
+            FavoriteFilter.NON_FAVORITES_UNVIEWED -> {
+                val viewedUris = PlaybackStatsDatabase.getInstance(context).getViewedUriStrings()
+                rawVideos.filter { !it.isFavorite && it.uri.toString() !in viewedUris }
+            }
         }
 
         // Accurately filter by orientation (re-inspecting dimensions if 0)
@@ -213,94 +286,7 @@ class VideoRepository {
     }
 
     private fun loadAllFavoriteVideos(context: Context): List<VideoItem> {
-        val list = mutableListOf<VideoItem>()
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return list
-
-        val projection = mutableListOf(
-            MediaStore.Video.Media._ID,
-            MediaStore.Video.Media.DISPLAY_NAME,
-            MediaStore.Video.Media.BUCKET_ID,
-            MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
-            MediaStore.Video.Media.DURATION,
-            MediaStore.Video.Media.WIDTH,
-            MediaStore.Video.Media.HEIGHT,
-            MediaStore.Video.Media.DATE_ADDED,
-            MediaStore.Video.Media.DATE_MODIFIED,
-            MediaStore.Video.Media.SIZE,
-            MediaStore.MediaColumns.IS_FAVORITE
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            projection.add(MediaStore.Video.Media.ORIENTATION)
-        }
-
-        val selection = "${MediaStore.MediaColumns.IS_FAVORITE} = 1"
-        val sortOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
-
-        try {
-            context.contentResolver.query(
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                projection.toTypedArray(),
-                selection,
-                null,
-                sortOrder
-            )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-                val bucketIdCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_ID)
-                val bucketNameCol = cursor.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
-                val durationCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
-                val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
-                val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
-                val dateAddedCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
-                val dateModifiedCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
-                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
-
-                val orientationCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    cursor.getColumnIndex(MediaStore.Video.Media.ORIENTATION)
-                } else -1
-
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idCol)
-                    val name = cursor.getString(nameCol) ?: "Video_$id"
-                    val bId = cursor.getString(bucketIdCol) ?: "favorites"
-                    val bName = if (bucketNameCol != -1) cursor.getString(bucketNameCol) ?: "Favorites" else "Favorites"
-                    val duration = cursor.getLong(durationCol)
-                    val width = cursor.getInt(widthCol)
-                    val height = cursor.getInt(heightCol)
-                    val dateAdded = cursor.getLong(dateAddedCol)
-                    val dateModified = cursor.getLong(dateModifiedCol)
-                    val size = cursor.getLong(sizeCol)
-                    val rotation = if (orientationCol != -1) cursor.getInt(orientationCol) else 0
-
-                    val contentUri = ContentUris.withAppendedId(
-                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                        id
-                    )
-
-                    list.add(
-                        VideoItem(
-                            id = id,
-                            uri = contentUri,
-                            title = name,
-                            durationMs = duration,
-                            width = width,
-                            height = height,
-                            rotationDegrees = rotation,
-                            dateAdded = dateAdded,
-                            dateModified = dateModified,
-                            size = size,
-                            bucketId = bId,
-                            bucketName = bName,
-                            isFavorite = true
-                        )
-                    )
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-
-        return list
+        return loadAllVideos(context).filter { it.isFavorite }
     }
 
     private fun loadVideosFromBucket(context: Context, bucketId: String): List<VideoItem> {
@@ -328,6 +314,8 @@ class VideoRepository {
         val selection = "${MediaStore.Video.Media.BUCKET_ID} = ?"
         val selectionArgs = arrayOf(bucketId)
         val sortOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
+
+        val localFavorites = PlaybackStatsDatabase.getInstance(context).getFavoritesMapSync()
 
         try {
             context.contentResolver.query(
@@ -368,12 +356,141 @@ class VideoRepository {
                     val dateModified = cursor.getLong(dateModifiedCol)
                     val size = cursor.getLong(sizeCol)
                     val rotation = if (orientationCol != -1) cursor.getInt(orientationCol) else 0
-                    val isFav = if (favoriteCol != -1) cursor.getInt(favoriteCol) == 1 else false
 
                     val contentUri = ContentUris.withAppendedId(
                         MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
                         id
                     )
+                    val mediaStoreFav = if (favoriteCol != -1) cursor.getInt(favoriteCol) == 1 else false
+                    val isFav = localFavorites[contentUri.toString()] ?: mediaStoreFav
+
+                    list.add(
+                        VideoItem(
+                            id = id,
+                            uri = contentUri,
+                            title = name,
+                            durationMs = duration,
+                            width = width,
+                            height = height,
+                            rotationDegrees = rotation,
+                            dateAdded = dateAdded,
+                            dateModified = dateModified,
+                            size = size,
+                            bucketId = bId,
+                            bucketName = bName,
+                            isFavorite = isFav
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        return list
+    }
+
+    suspend fun getSkippedVideosForCleanup(
+        context: Context,
+        bucketId: String? = null,
+        minSkips: Int = 5
+    ): List<VideoItem> = withContext(Dispatchers.IO) {
+        val statsDb = PlaybackStatsDatabase.getInstance(context)
+        val skippedMap = statsDb.getSkippedCounts(minSkips)
+        if (skippedMap.isEmpty()) return@withContext emptyList()
+
+        val allVideos = if (bucketId != null && bucketId != FAVORITES_BUCKET_ID && bucketId != ALL_VIDEOS_BUCKET_ID) {
+            loadVideosFromBucket(context, bucketId)
+        } else {
+            loadAllVideos(context)
+        }
+
+        allVideos
+            .filter { !it.isFavorite && (skippedMap[it.uri.toString()] ?: 0) >= minSkips }
+            .map { video ->
+                val filled = if (video.width == 0 || video.height == 0) {
+                    fillMissingDimensions(context, video)
+                } else {
+                    video
+                }
+                filled.skipCount = skippedMap[video.uri.toString()] ?: 0
+                filled
+            }
+            .sortedByDescending { it.skipCount }
+    }
+
+    private fun loadAllVideos(context: Context): List<VideoItem> {
+        val list = mutableListOf<VideoItem>()
+        val projection = mutableListOf(
+            MediaStore.Video.Media._ID,
+            MediaStore.Video.Media.DISPLAY_NAME,
+            MediaStore.Video.Media.BUCKET_ID,
+            MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
+            MediaStore.Video.Media.DURATION,
+            MediaStore.Video.Media.WIDTH,
+            MediaStore.Video.Media.HEIGHT,
+            MediaStore.Video.Media.DATE_ADDED,
+            MediaStore.Video.Media.DATE_MODIFIED,
+            MediaStore.Video.Media.SIZE
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            projection.add(MediaStore.Video.Media.ORIENTATION)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            projection.add(MediaStore.MediaColumns.IS_FAVORITE)
+        }
+
+        val sortOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
+
+        val localFavorites = PlaybackStatsDatabase.getInstance(context).getFavoritesMapSync()
+
+        try {
+            context.contentResolver.query(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                projection.toTypedArray(),
+                null,
+                null,
+                sortOrder
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
+                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+                val bucketIdCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_ID)
+                val bucketNameCol = cursor.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+                val durationCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
+                val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
+                val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
+                val dateAddedCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
+                val dateModifiedCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
+                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
+
+                val orientationCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    cursor.getColumnIndex(MediaStore.Video.Media.ORIENTATION)
+                } else -1
+
+                val favoriteCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    cursor.getColumnIndex(MediaStore.MediaColumns.IS_FAVORITE)
+                } else -1
+
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idCol)
+                    val name = cursor.getString(nameCol) ?: "Video_$id"
+                    val bId = cursor.getString(bucketIdCol) ?: "unknown"
+                    val bName = if (bucketNameCol != -1) cursor.getString(bucketNameCol) ?: "Videos" else "Videos"
+                    val duration = cursor.getLong(durationCol)
+                    val width = cursor.getInt(widthCol)
+                    val height = cursor.getInt(heightCol)
+                    val dateAdded = cursor.getLong(dateAddedCol)
+                    val dateModified = cursor.getLong(dateModifiedCol)
+                    val size = cursor.getLong(sizeCol)
+                    val rotation = if (orientationCol != -1) cursor.getInt(orientationCol) else 0
+
+                    val contentUri = ContentUris.withAppendedId(
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                        id
+                    )
+                    val mediaStoreFav = if (favoriteCol != -1) cursor.getInt(favoriteCol) == 1 else false
+                    val isFav = localFavorites[contentUri.toString()] ?: mediaStoreFav
 
                     list.add(
                         VideoItem(
@@ -464,11 +581,20 @@ class VideoRepository {
             )
         }
 
+        val statsDb = PlaybackStatsDatabase.getInstance(context)
+        val viewedUris = statsDb.getViewedUriStrings()
+        val skippedCounts = statsDb.getSkippedCounts(minSkips = 5)
+
         val portraitCount = videos.count { it.isPortrait }
         val landscapeCount = videos.count { it.isLandscape }
         val favCount = videos.count { it.isFavorite }
         val favPortrait = videos.count { it.isFavorite && it.isPortrait }
         val favLandscape = videos.count { it.isFavorite && it.isLandscape }
+
+        val unviewedNonFav = videos.count { !it.isFavorite && it.uri.toString() !in viewedUris }
+        val unviewedPortrait = videos.count { !it.isFavorite && it.isPortrait && it.uri.toString() !in viewedUris }
+        val unviewedLandscape = videos.count { !it.isFavorite && it.isLandscape && it.uri.toString() !in viewedUris }
+        val skippedCount = videos.count { !it.isFavorite && (skippedCounts[it.uri.toString()] ?: 0) >= 5 }
 
         VideoFolder(
             bucketId = treeUri.toString(),
@@ -480,6 +606,10 @@ class VideoRepository {
             favoriteCount = favCount,
             favoritePortraitCount = favPortrait,
             favoriteLandscapeCount = favLandscape,
+            unviewedNonFavoriteCount = unviewedNonFav,
+            unviewedPortraitCount = unviewedPortrait,
+            unviewedLandscapeCount = unviewedLandscape,
+            skippedCount = skippedCount,
             isFavoritesAlbum = false,
             isCustomTree = true,
             treeUri = treeUri

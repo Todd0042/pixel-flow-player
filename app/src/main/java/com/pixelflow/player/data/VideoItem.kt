@@ -17,8 +17,18 @@ data class VideoItem(
     val size: Long,
     val bucketId: String,
     val bucketName: String,
-    var isFavorite: Boolean = false
+    var isFavorite: Boolean = false,
+    var skipCount: Int = 0
 ) {
+    val formattedSize: String
+        get() {
+            val mb = size.toDouble() / (1024 * 1024)
+            return if (mb >= 1024) {
+                String.format(Locale.US, "%.1f GB", mb / 1024)
+            } else {
+                String.format(Locale.US, "%.1f MB", mb)
+            }
+        }
     val effectiveWidth: Int
         get() = if (rotationDegrees == 90 || rotationDegrees == 270) height else width
 

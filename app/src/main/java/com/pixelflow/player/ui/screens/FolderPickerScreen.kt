@@ -3,6 +3,7 @@ package com.pixelflow.player.ui.screens
 import android.Manifest
 import android.content.Intent
 import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -26,15 +27,18 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.StayCurrentLandscape
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -72,8 +76,11 @@ import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
 import com.pixelflow.player.data.VideoFolder
-import com.pixelflow.player.ui.theme.PixelHeartRed
+import com.pixelflow.player.data.VideoItem
 import com.pixelflow.player.data.VideoRepository
+import com.pixelflow.player.ui.components.SkippedCleanupDialog
+import com.pixelflow.player.ui.theme.PixelAccentBlue
+import com.pixelflow.player.ui.theme.PixelHeartRed
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -89,6 +96,25 @@ fun FolderPickerScreen(
 
     var folders by remember { mutableStateOf<List<VideoFolder>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
+    var skippedCleanupVideos by remember { mutableStateOf<List<VideoItem>?>(null) }
+    var isLoadingCleanup by remember { mutableStateOf(false) }
+
+    val totalSkipped = remember(folders) {
+        folders.sumOf { it.skippedCount }
+    }
+
+    fun openCleanup(bucketId: String? = null) {
+        scope.launch {
+            isLoadingCleanup = true
+            val list = repository.getSkippedVideosForCleanup(context, bucketId, minSkips = 5)
+            isLoadingCleanup = false
+            if (list.isNotEmpty()) {
+                skippedCleanupVideos = list
+            } else {
+                Toast.makeText(context, "No videos skipped 5+ times found", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     fun refreshFolders() {
         if (!hasStoragePermission) return
@@ -149,6 +175,26 @@ fun FolderPickerScreen(
                     }
                 },
                 actions = {
+                    if (totalSkipped > 0) {
+                        IconButton(onClick = { openCleanup(null) }) {
+                            BadgedBox(
+                                badge = {
+                                    Badge(
+                                        containerColor = PixelHeartRed,
+                                        contentColor = Color.White
+                                    ) {
+                                        Text("$totalSkipped")
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteSweep,
+                                    contentDescription = "Clean Up Skipped Videos",
+                                    tint = PixelHeartRed
+                                )
+                            }
+                        }
+                    }
                     IconButton(onClick = { openDocumentTreeLauncher.launch(null) }) {
                         Icon(
                             imageVector = Icons.Default.FolderOpen,
@@ -209,6 +255,17 @@ fun FolderPickerScreen(
             }
         }
     }
+
+    skippedCleanupVideos?.let { listToClean ->
+        SkippedCleanupDialog(
+            videos = listToClean,
+            onDismiss = { skippedCleanupVideos = null },
+            onDeleted = {
+                skippedCleanupVideos = null
+                refreshFolders()
+            }
+        )
+    }
 }
 
 @Composable
@@ -251,9 +308,17 @@ private fun AlbumCard(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = if (folder.isFavoritesAlbum) Icons.Default.Favorite else Icons.Default.Folder,
+                        imageVector = when {
+                            folder.isFavoritesAlbum -> Icons.Default.Favorite
+                            folder.isAllVideosAlbum -> Icons.Default.VideoLibrary
+                            else -> Icons.Default.Folder
+                        },
                         contentDescription = null,
-                        tint = if (folder.isFavoritesAlbum) PixelHeartRed else MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                        tint = when {
+                            folder.isFavoritesAlbum -> PixelHeartRed
+                            folder.isAllVideosAlbum -> PixelAccentBlue
+                            else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                        },
                         modifier = Modifier.size(56.dp)
                     )
                 }
@@ -284,7 +349,11 @@ private fun AlbumCard(
             ) {
                 // Top total badge
                 Surface(
-                    color = if (folder.isFavoritesAlbum) PixelHeartRed.copy(alpha = 0.85f) else Color.Black.copy(alpha = 0.65f),
+                    color = when {
+                        folder.isFavoritesAlbum -> PixelHeartRed.copy(alpha = 0.85f)
+                        folder.isAllVideosAlbum -> PixelAccentBlue.copy(alpha = 0.85f)
+                        else -> Color.Black.copy(alpha = 0.65f)
+                    },
                     shape = CircleShape,
                     modifier = Modifier.align(Alignment.End)
                 ) {
@@ -300,10 +369,18 @@ private fun AlbumCard(
                                 modifier = Modifier.size(11.dp)
                             )
                             Spacer(modifier = Modifier.width(3.dp))
+                        } else if (folder.isAllVideosAlbum) {
+                            Icon(
+                                imageVector = Icons.Default.VideoLibrary,
+                                contentDescription = null,
+                                tint = Color.Black,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
                         }
                         Text(
                             text = "${folder.totalCount}",
-                            color = Color.White,
+                            color = if (folder.isAllVideosAlbum) Color.Black else Color.White,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -318,6 +395,14 @@ private fun AlbumCard(
                                 imageVector = Icons.Default.Favorite,
                                 contentDescription = null,
                                 tint = PixelHeartRed,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                        } else if (folder.isAllVideosAlbum) {
+                            Icon(
+                                imageVector = Icons.Default.VideoLibrary,
+                                contentDescription = null,
+                                tint = PixelAccentBlue,
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
@@ -368,6 +453,24 @@ private fun AlbumCard(
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium
                             )
+                        }
+
+                        if (folder.skippedCount > 0) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteSweep,
+                                    contentDescription = "Skipped",
+                                    tint = PixelHeartRed,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text(
+                                    text = "${folder.skippedCount}",
+                                    color = PixelHeartRed,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }
