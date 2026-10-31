@@ -195,12 +195,8 @@ fun PlayerScreen(
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // Lifecycle-managed ExoPlayer via PlayerViewModel and MediaSessionService
+    // Lifecycle-managed ExoPlayer via PlayerViewModel
     val exoPlayer = viewModel.player
-
-    LaunchedEffect(Unit) {
-        viewModel.startMediaService()
-    }
 
     var currentIndex by remember {
         mutableIntStateOf(initialIndex.coerceIn(0, (videos.size - 1).coerceAtLeast(0)))
@@ -756,7 +752,7 @@ fun PlayerScreen(
                     currentPositionMs = currentPositionMs,
                     playlist = videos
                 )
-                exoPlayer.prepare()
+                // PlayerManager handles rate-limited player.prepare() recovery
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -807,7 +803,11 @@ fun PlayerScreen(
         exoPlayer.addListener(listener)
 
         onDispose {
+            playerViewRef?.player = null
+            playerViewRef = null
             exoPlayer.removeListener(listener)
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
             viewModel.saveCurrentState(
                 folder = folder,
                 favoriteFilter = favoriteFilter,
@@ -826,7 +826,6 @@ fun PlayerScreen(
                 exoPlayer.setPlaybackSpeed(1.0f)
                 exoPlayer.volume = 1.0f
             }
-            viewModel.stopMediaService()
 
             if (window != null) {
                 activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -1794,6 +1793,13 @@ fun PlayerScreen(
                         true
                     }
                 }
+            },
+            update = { playerView ->
+                playerView.player = exoPlayer
+                playerView.resizeMode = scaleMode.resizeMode
+            },
+            onRelease = { playerView ->
+                playerView.player = null
             }
         )
 

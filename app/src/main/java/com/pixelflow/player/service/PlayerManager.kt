@@ -69,17 +69,35 @@ class PlayerManager private constructor(private val appContext: Context) {
             .setSessionActivity(pendingIntent)
             .build()
 
+        var lastErrorTime = 0L
+        var errorRetryCount = 0
+
         player.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 Log.e(TAG, "onPlayerError: ${error.errorCodeName} (${error.errorCode})", error)
-                isRecoveringDecoder = true
-                onDecoderRecoveryChanged?.invoke(true)
-                // Attempt self-healing recovery by re-preparing
-                player.prepare()
+                val now = System.currentTimeMillis()
+                if (now - lastErrorTime < 3000L) {
+                    errorRetryCount++
+                } else {
+                    errorRetryCount = 1
+                }
+                lastErrorTime = now
+
+                if (errorRetryCount <= 2) {
+                    isRecoveringDecoder = true
+                    onDecoderRecoveryChanged?.invoke(true)
+                    // Attempt bounded self-healing recovery by re-preparing
+                    player.prepare()
+                } else {
+                    Log.w(TAG, "Suppressed player.prepare() loop after $errorRetryCount errors in 3s")
+                    isRecoveringDecoder = false
+                    onDecoderRecoveryChanged?.invoke(false)
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
+                    errorRetryCount = 0
                     if (isRecoveringDecoder) {
                         isRecoveringDecoder = false
                         onDecoderRecoveryChanged?.invoke(false)

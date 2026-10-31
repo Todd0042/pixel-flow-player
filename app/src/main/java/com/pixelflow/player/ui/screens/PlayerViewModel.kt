@@ -12,7 +12,6 @@ import com.pixelflow.player.data.SavedPlaybackSession
 import com.pixelflow.player.data.VideoFolder
 import com.pixelflow.player.data.VideoItem
 import com.pixelflow.player.data.VideoOrientation
-import com.pixelflow.player.service.PixelFlowMediaService
 import com.pixelflow.player.service.PlayerManager
 
 class PlayerViewModel(application: Application) : AndroidViewModel(application) {
@@ -26,22 +25,6 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     init {
         playerManager.onDecoderRecoveryChanged = { recovering ->
             isRecoveringDecoder = recovering
-        }
-    }
-
-    fun startMediaService() {
-        try {
-            PixelFlowMediaService.startService(getApplication())
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    fun stopMediaService() {
-        try {
-            PixelFlowMediaService.stopService(getApplication())
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
     }
 
@@ -112,7 +95,6 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
-        // Do not immediately release player if foreground media service is active,
-        // but release when whole process closes
+        playerManager.release()
     }
 }
