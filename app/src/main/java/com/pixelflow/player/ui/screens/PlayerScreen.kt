@@ -1412,8 +1412,8 @@ fun PlayerScreen(
                                                                     scrubHudTargetMs = backwardSimulatedPositionMs
                                                                     scrubHudDeltaSeconds = (backwardSimulatedPositionMs - scrubStartMs) / 1000f
 
-                                                                    val minIntervalMs = if (roundedSpeed < 1.5f) 95L else 55L
-                                                                    val seekParams = if (roundedSpeed < 1.5f) SeekParameters.EXACT else SeekParameters.CLOSEST_SYNC
+                                                                    val minIntervalMs = 55L
+                                                                    val seekParams = SeekParameters.CLOSEST_SYNC
 
                                                                     if (now - lastSeekDispatchTime >= minIntervalMs && !isSeekInProgress) {
                                                                         isSeekInProgress = true
